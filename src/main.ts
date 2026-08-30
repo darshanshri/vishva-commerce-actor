@@ -1,11 +1,17 @@
-import { Actor } from 'apify';
 import { PlaywrightCrawler } from '@crawlee/playwright';
+import { Actor } from 'apify';
+
+import { router } from './routes.js';
 
 interface Input {
-    startUrls: Array<{
+    startUrls: {
         url: string;
-    }>;
-    maxConcurrency?: number;
+        method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'TRACE' | 'OPTIONS' | 'CONNECT' | 'PATCH';
+        headers?: Record<string, string>;
+        userData?: Record<string, unknown>;
+    }[];
+
+    maxRequestsPerCrawl?: number;
 }
 
 await Actor.init();
@@ -14,40 +20,29 @@ const input = (await Actor.getInput<Input>()) ?? {
     startUrls: [],
 };
 
-if (!input.startUrls?.length) {
-    throw new Error('No product URLs provided.');
-}
+const {
+    startUrls = [],
+    maxRequestsPerCrawl = 10,
+} = input;
+
+const proxyConfiguration = await Actor.createProxyConfiguration({
+    checkAccess: true,
+});
 
 const crawler = new PlaywrightCrawler({
-    maxConcurrency: input.maxConcurrency ?? 1,
+    proxyConfiguration,
 
-    async requestHandler({ page, request, log }) {
-        log.info(`Scraping: ${request.url}`);
+    maxRequestsPerCrawl,
 
-        await page.waitForLoadState('domcontentloaded');
+    requestHandler: router,
 
-        // Give dynamic product sections a moment to render.
-        await page.waitForTimeout(3000);
-
-        const title = await page.title();
-
-        log.info(`Page title: ${title}`);
-
-        const data = await page.evaluate(() => {
-            const bodyText = document.body.innerText;
-
-            return {
-                url: window.location.href,
-                title: document.title,
-                bodyText,
-                scrapedAt: new Date().toISOString(),
-            };
-        });
-
-        await Actor.pushData(data);
+    launchContext: {
+        launchOptions: {
+            headless: true,
+        },
     },
 });
 
-await crawler.run(input.startUrls);
+await crawler.run(startUrls);
 
 await Actor.exit();
