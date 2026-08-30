@@ -1,26 +1,156 @@
 {
-    "$schema": "https://apify.com/schemas/v1/dataset.ide.json",
-    "actorSpecification": 1,
-    "fields": {},
-    "views": {
-        "overview": {
-            "title": "Overview",
-            "transformation": {
-                "fields": ["title", "url"]
-            },
-            "display": {
-                "component": "table",
-                "properties": {
-                    "title": {
-                        "label": "Title",
-                        "format": "text"
-                    },
-                    "url": {
-                        "label": "URL",
-                        "format": "link"
-                    }
-                }
-            }
-        }
+  "$schema": "https://apify.com/schemas/v1/dataset.ide.json",
+  "actorSpecification": 1,
+  "fields": {
+    "merchant": {
+      "label": "Merchant",
+      "type": "string"
+    },
+    "productId": {
+      "label": "Product ID",
+      "type": "string"
+    },
+    "title": {
+      "label": "Title",
+      "type": "string"
+    },
+    "brand": {
+      "label": "Brand",
+      "type": "string"
+    },
+    "price": {
+      "label": "Price",
+      "type": "number"
+    },
+    "priceText": {
+      "label": "Price Text",
+      "type": "string"
+    },
+    "mrp": {
+      "label": "MRP",
+      "type": "number"
+    },
+    "mrpText": {
+      "label": "MRP Text",
+      "type": "string"
+    },
+    "rating": {
+      "label": "Rating",
+      "type": "number"
+    },
+    "reviewCount": {
+      "label": "Review Count",
+      "type": "number"
+    },
+    "availability": {
+      "label": "Availability",
+      "type": "string"
+    },
+    "seller": {
+      "label": "Seller",
+      "type": "string"
+    },
+    "features": {
+      "label": "Features",
+      "type": "array"
+    },
+    "specifications": {
+      "label": "Specifications",
+      "type": "object"
+    },
+    "variants": {
+      "label": "Variants",
+      "type": "array"
+    },
+    "images": {
+      "label": "Images",
+      "type": "array"
+    },
+    "offers": {
+      "label": "Offers",
+      "type": "array"
+    },
+    "url": {
+      "label": "URL",
+      "type": "string"
+    },
+    "scrapedAt": {
+      "label": "Scraped At",
+      "type": "string"
     }
+  },
+  "views": {
+    "overview": {
+      "title": "Product Overview",
+      "transformation": {
+        "fields": [
+          "merchant",
+          "productId",
+          "title",
+          "brand",
+          "price",
+          "mrp",
+          "rating",
+          "reviewCount",
+          "availability",
+          "seller",
+          "url",
+          "scrapedAt"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "merchant": {
+            "label": "Merchant",
+            "format": "text"
+          },
+          "productId": {
+            "label": "Product ID",
+            "format": "text"
+          },
+          "title": {
+            "label": "Title",
+            "format": "text"
+          },
+          "brand": {
+            "label": "Brand",
+            "format": "text"
+          },
+          "price": {
+            "label": "Price",
+            "format": "number"
+          },
+          "mrp": {
+            "label": "MRP",
+            "format": "number"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "number"
+          },
+          "reviewCount": {
+            "label": "Review Count",
+            "format": "number"
+          },
+          "availability": {
+            "label": "Availability",
+            "format": "text"
+          },
+          "seller": {
+            "label": "Seller",
+            "format": "text"
+          },
+          "url": {
+            "label": "URL",
+            "format": "link"
+          },
+          "scrapedAt": {
+            "label": "Scraped At",
+            "format": "text"
+          }
+        }
+      }
+    }
+  }
 }
