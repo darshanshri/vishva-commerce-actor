@@ -1,40 +1,40 @@
 {
-    "name": "vishva-commerce-actor",
-    "version": "0.1.0",
-    "type": "module",
-    "description": "Vishva Commerce product intelligence scraper for Shopigo.",
-    "engines": {
-        "node": ">=18.0.0"
-    },
-    "dependencies": {
-        "apify": "^3.7.0",
-        "@crawlee/playwright": "^3.16.0",
-        "playwright": "^1.55.0"
-    },
-    "devDependencies": {
-        "@apify/eslint-config": "^2.0.0",
-        "@apify/tsconfig": "^0.2.0",
-        "@types/node": "^24.0.0",
-        "eslint": "^9.29.0",
-        "eslint-config-prettier": "^10.1.5",
-        "globals": "^17.0.0",
-        "prettier": "^3.5.3",
-        "tsx": "^4.20.3",
-        "typescript": "^6.0.0",
-        "typescript-eslint": "^8.58.0",
-        "vitest": "^4.1.0"
-    },
-    "scripts": {
-        "start": "npm run start:dev",
-        "start:prod": "node dist/main.js",
-        "start:dev": "tsx src/main.ts",
-        "build": "tsc",
-        "lint": "eslint",
-        "lint:fix": "eslint --fix",
-        "format": "prettier --write .",
-        "format:check": "prettier --check .",
-        "test": "vitest run"
-    },
-    "author": "Darshan",
-    "license": "ISC"
+  "name": "vishva-commerce-actor",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Vishva Commerce product intelligence scraper for Shopigo.",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "apify": "^3.7.0",
+    "@crawlee/playwright": "^3.16.0",
+    "playwright": "*"
+  },
+  "devDependencies": {
+    "@apify/eslint-config": "^2.0.0",
+    "@apify/tsconfig": "^0.2.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.29.0",
+    "eslint-config-prettier": "^10.1.5",
+    "globals": "^17.0.0",
+    "prettier": "^3.5.3",
+    "tsx": "^4.20.3",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "^8.58.0",
+    "vitest": "^4.1.0"
+  },
+  "scripts": {
+    "start": "npm run start:dev",
+    "start:prod": "node dist/main.js",
+    "start:dev": "tsx src/main.ts",
+    "build": "tsc",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run"
+  },
+  "author": "Darshan",
+  "license": "ISC"
 }
