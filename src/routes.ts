@@ -291,10 +291,18 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
         );
 
         // Alternate-view thumbnails, normalised back to full size and
-        // de-duplicated against the main image.
-        document
-            .querySelectorAll('#altImages img')
-            .forEach((img) => addImage(img.getAttribute('src')));
+        // de-duplicated against the main image. Skip video thumbnails
+        // (they carry a play-icon overlay and are not product photos).
+        document.querySelectorAll('#altImages li').forEach((item) => {
+            const isVideo =
+                /video/i.test(item.className) ||
+                item.querySelector('.play-icon-overlay') !== null;
+            if (isVideo) return;
+
+            item
+                .querySelectorAll('img')
+                .forEach((img) => addImage(img.getAttribute('src')));
+        });
 
         // ----------------------------------------
         // SPECIFICATIONS
@@ -359,41 +367,57 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
         // Only real twister swatch <li> elements — NOT arbitrary
         // [data-csa-c-item-id] nodes, which match large unrelated
         // page containers and leak page text into variants.
+        // Genuine twister swatches are leaf <li> items. Legacy layouts
+        // put the variant ASIN on data-csa-c-item-id inside
+        // #twister_feature_div; the newer "inline twister" uses
+        // [id^="inline-twister"]. We scope to those containers (plus the
+        // classic #variation_*_name lists) so we never match the large
+        // container node that concatenated the whole page into one blob.
         const variantElements = document.querySelectorAll(
+            '#twister_feature_div li[data-csa-c-item-id], ' +
+            '#twisterContainer li[data-csa-c-item-id], ' +
+            '[id^="inline-twister"] li[data-csa-c-item-id], ' +
             '#variation_color_name li, ' +
             '#variation_size_name li, ' +
             '#variation_style_name li, ' +
             '#variation_pattern_name li',
         );
 
-        const variants = Array.from(variantElements)
-            .map((element) => {
-                const rawTitle = element.getAttribute('title') || '';
-                const label = (
-                    element.querySelector('img')?.getAttribute('alt') ||
-                    element
-                        .querySelector('.a-button-text')
-                        ?.textContent ||
-                    rawTitle.replace(/^Click to select\s*/i, '') ||
-                    element.textContent ||
-                    ''
-                )
-                    .replace(/\s+/g, ' ')
-                    .trim();
+        const variants: { text: string; value: string | null }[] = [];
+        const seenVariants = new Set<string>();
 
-                const value =
-                    element.getAttribute('data-defaultasin') ||
-                    element.getAttribute('data-dp-url') ||
-                    null;
+        variantElements.forEach((element) => {
+            const rawTitle = element.getAttribute('title') || '';
+            const label = (
+                element.querySelector('.swatch-title-text-display')
+                    ?.textContent ||
+                element.querySelector('.swatch-title-text')?.textContent ||
+                element.querySelector('.a-button-text')?.textContent ||
+                element.querySelector('img')?.getAttribute('alt') ||
+                rawTitle.replace(/^Click to select\s*/i, '') ||
+                element.textContent ||
+                ''
+            )
+                .replace(/\s+/g, ' ')
+                .trim();
 
-                return { text: label, value };
-            })
-            // Keep genuine, short swatch labels; drop empties and any
-            // accidental large text blobs.
-            .filter(
-                (variant) =>
-                    variant.text.length > 0 && variant.text.length <= 100,
-            );
+            const value =
+                element.getAttribute('data-csa-c-item-id') ||
+                element.getAttribute('data-defaultasin') ||
+                element.getAttribute('data-dp-url') ||
+                null;
+
+            // Genuine swatch labels are short; reject empties, oversized
+            // blobs and anything that looks like leaked code/markup.
+            if (!label || label.length > 100) return;
+            if (looksLikeCode(label)) return;
+
+            const dedupeKey = `${label}::${value ?? ''}`;
+            if (seenVariants.has(dedupeKey)) return;
+            seenVariants.add(dedupeKey);
+
+            variants.push({ text: label, value });
+        });
 
         // ----------------------------------------
         // OFFERS / PROMOTIONS
