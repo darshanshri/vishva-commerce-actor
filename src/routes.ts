@@ -1,15 +1,19 @@
-import { createCheerioRouter } from '@crawlee/cheerio';
+import { createPlaywrightRouter } from '@crawlee/playwright';
 
-export const router = createCheerioRouter();
+export const router = createPlaywrightRouter();
 
-router.addDefaultHandler(async ({ enqueueLinks, request, $, log, pushData }) => {
-    log.info('enqueueing new URLs');
-    await enqueueLinks();
+router.addDefaultHandler(async ({ page, request, log, pushData }) => {
+    log.info(`Scraping product page: ${request.url}`);
 
-    // Extract title from the page.
-    const title = $('title').text();
-    log.info(`${title}`, { url: request.loadedUrl });
+    const title = await page.title();
 
-    // Save url and title to Dataset - a table-like storage.
-    await pushData({ url: request.loadedUrl, title });
+    const product = {
+        url: request.loadedUrl,
+        title,
+        scrapedAt: new Date().toISOString(),
+    };
+
+    log.info(`Product: ${title}`);
+
+    await pushData(product);
 });
