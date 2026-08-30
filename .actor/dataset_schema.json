@@ -8,47 +8,58 @@
     },
     "productId": {
       "label": "Product ID",
-      "type": ["string", "null"]
+      "type": "string",
+      "nullable": true
     },
     "title": {
       "label": "Title",
-      "type": ["string", "null"]
+      "type": "string",
+      "nullable": true
     },
     "brand": {
       "label": "Brand",
-      "type": ["string", "null"]
+      "type": "string",
+      "nullable": true
     },
     "price": {
       "label": "Price",
-      "type": ["number", "null"]
+      "type": "number",
+      "nullable": true
     },
     "priceText": {
       "label": "Price Text",
-      "type": ["string", "null"]
+      "type": "string",
+      "nullable": true
     },
     "mrp": {
       "label": "MRP",
-      "type": ["number", "null"]
+      "type": "number",
+      "nullable": true
     },
     "mrpText": {
       "label": "MRP Text",
-      "type": ["string", "null"]
+      "type": "string",
+      "nullable": true
     },
     "rating": {
       "label": "Rating",
-      "type": ["number", "null"]
+      "type": "number",
+      "nullable": true
     },
     "reviewCount": {
       "label": "Review Count",
-      "type": ["number", "null"]
+      "type": "number",
+      "nullable": true
     },
     "availability": {
       "label": "Availability",
-      "type": ["string", "null"]
+      "type": "string",
+      "nullable": true
     },
     "seller": {
       "label": "Seller",
-      "type": ["string", "null"]
+      "type": "string",
+      "nullable": true
     },
     "features": {
       "label": "Features",
