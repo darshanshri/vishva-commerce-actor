@@ -120,6 +120,47 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
             return Number.isFinite(number) ? number : null;
         };
 
+        // Extract the first standalone number from a string, e.g.
+        // "4.3 out of 5 stars" -> 4.3. parseNumber() strips all
+        // non-digits and would wrongly merge "4.3...5" into "4.35".
+        const parseFirstFloat = (value: string | null): number | null => {
+            if (!value) return null;
+            const match = value.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+            return match ? Number(match[0]) : null;
+        };
+
+        // Turn a raw byline / brand-row string into a clean brand name.
+        // "Visit the Samsung Store" -> "Samsung", "Brand: Samsung" -> "Samsung".
+        const cleanBrand = (value: string | null): string | null => {
+            if (!value) return null;
+            let brandName = value.replace(/\s+/g, ' ').trim();
+
+            const visitMatch = brandName.match(
+                /^Visit the\s+(.+?)\s+Store$/i,
+            );
+            if (visitMatch) return visitMatch[1].trim() || null;
+
+            brandName = brandName
+                .replace(/^Brand:\s*/i, '')
+                .replace(/^Visit the\s+/i, '')
+                .replace(/\s+Store$/i, '')
+                .trim();
+
+            return brandName || null;
+        };
+
+        // Strip Amazon image-size modifiers (e.g. "._SS40_." or
+        // "._AC_SX679_.") to get the canonical full-size image URL.
+        const normalizeImageUrl = (src: string): string =>
+            src.replace(/\._[^./]*_\./, '.');
+
+        // Heuristic: does a string look like leaked JS/CSS/markup rather
+        // than a real, human-readable offer line?
+        const looksLikeCode = (value: string): boolean =>
+            /[{}<>]|function\s*\(|=>|window\.|document\.|@media|\bvar\s|;\s*$/.test(
+                value,
+            );
+
         // ----------------------------------------
         // PRODUCT TITLE
         // ----------------------------------------
@@ -150,9 +191,13 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
         // RATING
         // ----------------------------------------
 
+        // Rating text usually lives in the popover's title attribute or
+        // the star-icon alt text, e.g. "4.3 out of 5 stars".
         const ratingText =
-            text('#acrPopover') ||
-            text('[data-hook="average-star-rating"]');
+            attr('#acrPopover', 'title') ||
+            text('#acrPopover .a-icon-alt') ||
+            text('#averageCustomerReviews .a-icon-alt') ||
+            text('[data-hook="rating-out-of-text"]');
 
         // ----------------------------------------
         // REVIEW COUNT
@@ -182,11 +227,19 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
         // BRAND
         // ----------------------------------------
 
+        // The product-overview "Brand" row is the cleanest source
+        // ("Samsung"); the byline ("Visit the Samsung Store") is a
+        // fallback that we normalise with cleanBrand().
         const brand =
-            text('#bylineInfo') ||
-            text(
-                '#productOverview_feature_div .po-brand td.a-span9',
-            );
+            cleanBrand(
+                text(
+                    '#productOverview_feature_div .po-brand td.a-span9',
+                ),
+            ) ||
+            cleanBrand(
+                text('#productOverview_feature_div .po-brand .po-break-word'),
+            ) ||
+            cleanBrand(text('#bylineInfo'));
 
         // ----------------------------------------
         // ASIN
@@ -212,22 +265,36 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
         // ----------------------------------------
 
         const images: string[] = [];
+        const seenImages = new Set<string>();
 
+        const addImage = (raw: string | null): void => {
+            if (!raw || !/^https?:\/\//.test(raw)) return;
+            // Only accept product-image CDN URLs; this excludes sprites,
+            // 1x1 tracking pixels, grey placeholders and UI icons.
+            if (!/\/images\/I\//.test(raw)) return;
+            if (/sprite|transparent|grey-pixel|pixel\.gif/i.test(raw)) return;
+
+            const full = normalizeImageUrl(raw);
+            if (seenImages.has(full)) return;
+            seenImages.add(full);
+            images.push(full);
+        };
+
+        // Main image: prefer the hi-res variant Amazon stashes on the node.
+        const mainImage = document.querySelector(
+            '#landingImage, #imgTagWrapperId img',
+        );
+        addImage(
+            mainImage?.getAttribute('data-old-hires') ||
+                mainImage?.getAttribute('src') ||
+                null,
+        );
+
+        // Alternate-view thumbnails, normalised back to full size and
+        // de-duplicated against the main image.
         document
-            .querySelectorAll(
-                '#altImages img, #imageBlock img',
-            )
-            .forEach((img) => {
-                const src = img.getAttribute('src');
-
-                if (
-                    src &&
-                    !src.includes('sprite') &&
-                    !src.includes('transparent')
-                ) {
-                    images.push(src);
-                }
-            });
+            .querySelectorAll('#altImages img')
+            .forEach((img) => addImage(img.getAttribute('src')));
 
         // ----------------------------------------
         // SPECIFICATIONS
@@ -235,62 +302,136 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
 
         const specifications: Record<string, string> = {};
 
+        // Remove Amazon's bidi marks (‎ / ‏), collapse spaces
+        // and trim stray leading/trailing colons.
+        const cleanSpec = (raw: string | null | undefined): string =>
+            (raw || '')
+                .replace(/[‎‏]/g, '')
+                .replace(/\s+/g, ' ')
+                .replace(/^[:\s]+|[:\s]+$/g, '')
+                .trim();
+
+        const addSpec = (
+            keyRaw: string | null | undefined,
+            valueRaw: string | null | undefined,
+        ): void => {
+            const key = cleanSpec(keyRaw);
+            const value = cleanSpec(valueRaw);
+            if (key && value && !(key in specifications)) {
+                specifications[key] = value;
+            }
+        };
+
+        // 1) Two-column tables: product overview + technical/detail tables.
         document
             .querySelectorAll(
+                '#productOverview_feature_div tr, ' +
                 '#productDetails_techSpec_section_1 tr, ' +
+                '#productDetails_techSpec_section_2 tr, ' +
                 '#productDetails_detailBullets_sections1 tr, ' +
                 '#technicalSpecifications_section_1 tr',
             )
             .forEach((row) => {
                 const cells = row.querySelectorAll('th, td');
-
                 if (cells.length >= 2) {
-                    const key =
-                        cells[0].textContent?.trim();
-
-                    const value =
-                        cells[1].textContent?.trim();
-
-                    if (key && value) {
-                        specifications[key] = value;
-                    }
+                    addSpec(cells[0].textContent, cells[1].textContent);
                 }
+            });
+
+        // 2) Detail-bullet lists: "<b>Key :</b> Value" list items.
+        document
+            .querySelectorAll(
+                '#detailBullets_feature_div li, ' +
+                '#detailBulletsWrapper_feature_div li',
+            )
+            .forEach((li) => {
+                const boldKey = li.querySelector('.a-text-bold');
+                if (!boldKey) return;
+                const keyText = boldKey.textContent || '';
+                const value = (li.textContent || '').replace(keyText, '');
+                addSpec(keyText, value);
             });
 
         // ----------------------------------------
         // VARIANTS
         // ----------------------------------------
 
+        // Only real twister swatch <li> elements — NOT arbitrary
+        // [data-csa-c-item-id] nodes, which match large unrelated
+        // page containers and leak page text into variants.
         const variantElements = document.querySelectorAll(
-            '#twister_feature_div [data-csa-c-item-id], ' +
+            '#variation_color_name li, ' +
             '#variation_size_name li, ' +
-            '#variation_color_name li',
+            '#variation_style_name li, ' +
+            '#variation_pattern_name li',
         );
 
         const variants = Array.from(variantElements)
-            .map((element) => ({
-                text:
-                    element.textContent?.trim() || '',
+            .map((element) => {
+                const rawTitle = element.getAttribute('title') || '';
+                const label = (
+                    element.querySelector('img')?.getAttribute('alt') ||
+                    element
+                        .querySelector('.a-button-text')
+                        ?.textContent ||
+                    rawTitle.replace(/^Click to select\s*/i, '') ||
+                    element.textContent ||
+                    ''
+                )
+                    .replace(/\s+/g, ' ')
+                    .trim();
 
-                value:
-                    element.getAttribute(
-                        'data-csa-c-item-id',
-                    ) ||
-                    element.getAttribute('title') ||
-                    null,
-            }))
-            .filter((variant) => variant.text);
+                const value =
+                    element.getAttribute('data-defaultasin') ||
+                    element.getAttribute('data-dp-url') ||
+                    null;
+
+                return { text: label, value };
+            })
+            // Keep genuine, short swatch labels; drop empties and any
+            // accidental large text blobs.
+            .filter(
+                (variant) =>
+                    variant.text.length > 0 && variant.text.length <= 100,
+            );
 
         // ----------------------------------------
         // OFFERS / PROMOTIONS
         // ----------------------------------------
 
-        const offerTexts = texts(
-            '#offersDisplay_feature_div .a-list-item, ' +
-            '#promotions_feature_div .a-list-item, ' +
-            '#couponText, ' +
-            '#buybox .a-section',
-        );
+        // Target known offer/promotion widgets only. The previous
+        // '#buybox .a-section' selector swallowed entire buybox
+        // sections (scripts/markup included) — removed.
+        const offerTexts: string[] = [];
+        const seenOffers = new Set<string>();
+
+        document
+            .querySelectorAll(
+                '#itembox-InstantBankDiscount .a-truncate-full, ' +
+                '#itembox-NoCostEMI .a-truncate-full, ' +
+                '#itembox-PartnerOffers .a-truncate-full, ' +
+                '#itembox-Cashback .a-truncate-full, ' +
+                '.vsx-offers-desktop-lv__cell .a-truncate-full, ' +
+                '.offers-items .a-truncate-full, ' +
+                '#promotions_feature_div .a-list-item, ' +
+                '#applicablePromotionList_feature_div .a-list-item, ' +
+                '#promoPriceBlockMessage_feature_div .a-list-item, ' +
+                '#couponText',
+            )
+            .forEach((element) => {
+                const offer = (element.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+
+                // Reject empties, over-long blobs and anything that
+                // looks like leaked JS/CSS/markup.
+                if (offer.length < 3 || offer.length > 300) return;
+                if (looksLikeCode(offer)) return;
+                if (seenOffers.has(offer)) return;
+
+                seenOffers.add(offer);
+                offerTexts.push(offer);
+            });
 
         // ----------------------------------------
         // FINAL PRODUCT OBJECT
@@ -310,7 +451,7 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
             mrp: parseNumber(mrpText),
             mrpText,
 
-            rating: parseNumber(ratingText),
+            rating: parseFirstFloat(ratingText),
             reviewCount: parseNumber(reviewText),
 
             availability,
