@@ -1,41 +1,332 @@
-// Crawlee - web scraping and browser automation library (Read more at https://crawlee.dev)
-import { CheerioCrawler } from '@crawlee/cheerio';
-// Apify SDK - toolkit for building Apify Actors (Read more at https://docs.apify.com/sdk/js/)
 import { Actor } from 'apify';
-
-// this is ESM project, and as such, it requires you to specify extensions in your relative imports
-// read more about this here: https://nodejs.org/docs/latest-v18.x/api/esm.html#mandatory-file-extensions
-// note that we need to use `.js` even when inside TS files
-import { router } from './routes.js';
+import { PlaywrightCrawler } from '@crawlee/playwright';
 
 interface Input {
-    startUrls: {
-        url: string;
-        method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'TRACE' | 'OPTIONS' | 'CONNECT' | 'PATCH';
-        headers?: Record<string, string>;
-        userData: Record<string, unknown>;
-    }[];
-    maxRequestsPerCrawl: number;
+    urls: string[];
+    mode?: 'FULL_PRODUCT' | 'PRICE_CHECK' | 'OFFER_CHECK';
+    maxConcurrency?: number;
 }
 
-// The init() call configures the Actor to correctly work with the Apify-provided environment - mainly the storage infrastructure. It is necessary that every Actor performs an init() call.
 await Actor.init();
 
-// Structure of input is defined in input_schema.json
-const { startUrls = ['https://apify.com'], maxRequestsPerCrawl = 100 } =
-    (await Actor.getInput<Input>()) ?? ({} as Input);
+const input = (await Actor.getInput<Input>()) ?? {
+    urls: [],
+    mode: 'FULL_PRODUCT',
+};
 
-// `checkAccess` flag ensures the proxy credentials are valid, but the check can take a few hundred milliseconds.
-// Disable it for short runs if you are sure your proxy configuration is correct
-const proxyConfiguration = await Actor.createProxyConfiguration({ checkAccess: true });
+const urls = input.urls ?? [];
+const mode = input.mode ?? 'FULL_PRODUCT';
 
-const crawler = new CheerioCrawler({
-    proxyConfiguration,
-    maxRequestsPerCrawl,
-    requestHandler: router,
+if (!urls.length) {
+    throw new Error('No product URLs provided.');
+}
+
+const proxyConfiguration = await Actor.createProxyConfiguration({
+    useApifyProxy: true,
 });
 
-await crawler.run(startUrls);
+const crawler = new PlaywrightCrawler({
+    proxyConfiguration,
 
-// Gracefully exit the Actor process. It's recommended to quit all Actors with an exit()
+    maxConcurrency: input.maxConcurrency ?? 1,
+
+    maxRequestsPerCrawl: urls.length,
+
+    launchContext: {
+        launchOptions: {
+            headless: true,
+        },
+    },
+
+    async requestHandler({ page, request, log }) {
+        const url = request.loadedUrl;
+
+        log.info(`Scraping ${url}`);
+
+        // Wait for the main product page to render.
+        await page.waitForLoadState('domcontentloaded');
+
+        await page.waitForTimeout(2000);
+
+        const hostname = new URL(url).hostname;
+
+        if (hostname.includes('amazon.')) {
+            const product = await extractAmazonProduct(page, url, mode);
+
+            await Actor.pushData(product);
+
+            log.info(`Amazon product extracted: ${product.title}`);
+            return;
+        }
+
+        throw new Error(`Unsupported marketplace: ${hostname}`);
+    },
+});
+
+await crawler.run(urls);
+
 await Actor.exit();
+
+
+// ============================================================
+// AMAZON
+// ============================================================
+
+async function extractAmazonProduct(
+    page: any,
+    url: string,
+    mode: string,
+) {
+    const data = await page.evaluate((mode) => {
+
+        const text = (selector: string): string | null => {
+            const el = document.querySelector(selector);
+            return el?.textContent?.replace(/\s+/g, ' ').trim() || null;
+        };
+
+        const texts = (selector: string): string[] => {
+            return Array.from(document.querySelectorAll(selector))
+                .map(el => el.textContent?.replace(/\s+/g, ' ').trim() || '')
+                .filter(Boolean);
+        };
+
+        const attr = (
+            selector: string,
+            attribute: string,
+        ): string | null => {
+            const el = document.querySelector(selector);
+            return el?.getAttribute(attribute) || null;
+        };
+
+        // -----------------------------
+        // BASIC PRODUCT INFORMATION
+        // -----------------------------
+
+        const title =
+            text('#productTitle') ||
+            text('h1');
+
+        const price =
+            text('.priceToPay .a-offscreen') ||
+            text('#corePrice_feature_div .a-offscreen') ||
+            text('.a-price .a-offscreen');
+
+        const mrp =
+            text('.basisPrice .a-offscreen') ||
+            text('.a-text-price .a-offscreen');
+
+        const rating =
+            text('#acrPopover') ||
+            text('[data-hook="rating-out-of-text"]');
+
+        const reviewCount =
+            text('#acrCustomerReviewText') ||
+            text('[data-hook="total-review-count"]');
+
+        // -----------------------------
+        // AVAILABILITY
+        // -----------------------------
+
+        const availability =
+            text('#availability') ||
+            text('#outOfStock');
+
+        // -----------------------------
+        // SELLER
+        // -----------------------------
+
+        const seller =
+            text('#sellerProfileTriggerId') ||
+            text('#merchant-info');
+
+        // -----------------------------
+        // FEATURES
+        // -----------------------------
+
+        const features = texts(
+            '#feature-bullets ul li span.a-list-item'
+        );
+
+        // -----------------------------
+        // PRODUCT DESCRIPTION
+        // -----------------------------
+
+        const description =
+            text('#productDescription') ||
+            text('#bookDescription_feature_div');
+
+        // -----------------------------
+        // SPECIFICATIONS
+        // -----------------------------
+
+        const specifications: Record<string, string> = {};
+
+        document
+            .querySelectorAll(
+                '#productDetails_techSpec_section_1 tr, ' +
+                '#productDetails_detailBullets_sections1 tr'
+            )
+            .forEach(row => {
+
+                const cells = row.querySelectorAll('th, td');
+
+                if (cells.length >= 2) {
+                    const key =
+                        cells[0].textContent
+                            ?.replace(/\s+/g, ' ')
+                            .trim();
+
+                    const value =
+                        cells[1].textContent
+                            ?.replace(/\s+/g, ' ')
+                            .trim();
+
+                    if (key && value) {
+                        specifications[key] = value;
+                    }
+                }
+            });
+
+        // -----------------------------
+        // ASIN
+        // -----------------------------
+
+        let asin: string | null = null;
+
+        const asinElement =
+            document.querySelector(
+                '#productDetails_detailBullets_sections1 tr'
+            );
+
+        const pageText =
+            document.body.innerText;
+
+        const asinMatch =
+            pageText.match(
+                /ASIN\s*[:\s]*([A-Z0-9]{10})/i
+            );
+
+        if (asinMatch) {
+            asin = asinMatch[1];
+        }
+
+        // -----------------------------
+        // IMAGES
+        // -----------------------------
+
+        const images = Array.from(
+            document.querySelectorAll(
+                '#landingImage, #altImages img'
+            )
+        )
+            .map(img =>
+                img.getAttribute('src') ||
+                img.getAttribute('data-old-hires')
+            )
+            .filter(Boolean);
+
+        // -----------------------------
+        // VARIANTS
+        // -----------------------------
+
+        const variants: {
+            name: string;
+            values: string[];
+        }[] = [];
+
+        document
+            .querySelectorAll(
+                '#twister_feature_div .a-row, ' +
+                '#variation_size_name, ' +
+                '#variation_color_name, ' +
+                '#variation_style_name'
+            )
+            .forEach(el => {
+
+                const label =
+                    el.querySelector('.a-form-label')
+                        ?.textContent
+                        ?.replace(/\s+/g, ' ')
+                        .trim();
+
+                const values =
+                    Array.from(
+                        el.querySelectorAll(
+                            'option, .selection, .swatchSelect'
+                        )
+                    )
+                        .map(v =>
+                            v.textContent
+                                ?.replace(/\s+/g, ' ')
+                                .trim() || ''
+                        )
+                        .filter(Boolean);
+
+                if (label && values.length) {
+                    variants.push({
+                        name: label,
+                        values,
+                    });
+                }
+            });
+
+        // -----------------------------
+        // RAW OFFER TEXT
+        // -----------------------------
+
+        const offerSection =
+            document.querySelector('#offers') ||
+            document.querySelector('#dealBadge_feature_div') ||
+            document.querySelector('#promotions_feature_div');
+
+        const offerText =
+            offerSection?.textContent
+                ?.replace(/\s+/g, ' ')
+                .trim() || null;
+
+        // -----------------------------
+        // RETURN
+        // -----------------------------
+
+        return {
+            merchant: 'amazon',
+
+            url,
+
+            asin,
+
+            title,
+
+            price,
+
+            mrp,
+
+            rating,
+
+            reviewCount,
+
+            availability,
+
+            seller,
+
+            features,
+
+            description,
+
+            specifications,
+
+            variants,
+
+            images,
+
+            rawOfferText: offerText,
+
+            mode,
+
+            scrapedAt: new Date().toISOString(),
+        };
+
+    }, mode);
+
+    return data;
+}
