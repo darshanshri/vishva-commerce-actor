@@ -1,4 +1,5 @@
 import { createPlaywrightRouter } from '@crawlee/playwright';
+import { Actor } from 'apify';
 
 export const router = createPlaywrightRouter();
 
@@ -7,6 +8,84 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
 
     await page.waitForLoadState('domcontentloaded');
     await page.waitForTimeout(2000);
+
+    // ============================================================
+    // TEMPORARY DIAGNOSTICS — remove after diagnosing Amazon page.
+    // Determines exactly which page Amazon returns before extraction.
+    // Does not touch the extraction logic below.
+    // ============================================================
+    try {
+        // 1. Current page URL (after any redirects)
+        log.info(`[DIAG] page.url(): ${page.url()}`);
+
+        // 2. Page <title>
+        const pageTitle = await page.title();
+        log.info(`[DIAG] page.title(): ${pageTitle}`);
+
+        // 3. First ~2000 chars of visible body text
+        const bodyText = await page
+            .locator('body')
+            .innerText()
+            .catch(() => '');
+        log.info(
+            `[DIAG] body.innerText (first 2000 chars):\n${bodyText.slice(0, 2000)}`,
+        );
+
+        // 4. Presence of key Amazon selectors
+        const selectorsToCheck = [
+            '#productTitle',
+            '#availability',
+            '.a-price',
+            '#ASIN',
+            '#bylineInfo',
+        ];
+        for (const sel of selectorsToCheck) {
+            const count = await page.locator(sel).count().catch(() => -1);
+            log.info(
+                `[DIAG] selector ${sel}: ${count > 0 ? 'FOUND' : 'missing'} (count=${count})`,
+            );
+        }
+
+        // 5. Detect common Amazon bot / interstitial / error pages
+        const botSignals = [
+            '503',
+            'Robot Check',
+            'CAPTCHA',
+            "Sorry, we just need to make sure you're not a robot",
+            'Service Unavailable',
+            'Enter the characters you see below',
+            'To discuss automated access',
+        ];
+        const haystack = `${pageTitle}\n${bodyText}`.toLowerCase();
+        const matched = botSignals.filter((s) =>
+            haystack.includes(s.toLowerCase()),
+        );
+        if (matched.length > 0) {
+            log.warning(
+                `[DIAG] BOT / INTERSTITIAL signals detected: ${matched.join(' | ')}`,
+            );
+        } else {
+            log.info('[DIAG] No obvious bot/interstitial signals detected.');
+        }
+
+        // 6. Save a full-page screenshot to the default key-value store
+        try {
+            const screenshot = await page.screenshot({ fullPage: true });
+            await Actor.setValue('DEBUG_SCREENSHOT', screenshot, {
+                contentType: 'image/png',
+            });
+            log.info(
+                '[DIAG] Screenshot saved to key-value store under key: DEBUG_SCREENSHOT',
+            );
+        } catch (screenshotErr) {
+            log.warning(`[DIAG] Screenshot capture failed: ${screenshotErr}`);
+        }
+    } catch (diagErr) {
+        log.warning(`[DIAG] Diagnostics block failed: ${diagErr}`);
+    }
+    // ============================================================
+    // END TEMPORARY DIAGNOSTICS
+    // ============================================================
 
     const product = await page.evaluate(() => {
         const text = (selector: string): string | null => {
