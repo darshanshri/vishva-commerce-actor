@@ -8,47 +8,47 @@
     },
     "productId": {
       "label": "Product ID",
-      "type": "string"
+      "type": ["string", "null"]
     },
     "title": {
       "label": "Title",
-      "type": "string"
+      "type": ["string", "null"]
     },
     "brand": {
       "label": "Brand",
-      "type": "string"
+      "type": ["string", "null"]
     },
     "price": {
       "label": "Price",
-      "type": "number"
+      "type": ["number", "null"]
     },
     "priceText": {
       "label": "Price Text",
-      "type": "string"
+      "type": ["string", "null"]
     },
     "mrp": {
       "label": "MRP",
-      "type": "number"
+      "type": ["number", "null"]
     },
     "mrpText": {
       "label": "MRP Text",
-      "type": "string"
+      "type": ["string", "null"]
     },
     "rating": {
       "label": "Rating",
-      "type": "number"
+      "type": ["number", "null"]
     },
     "reviewCount": {
       "label": "Review Count",
-      "type": "number"
+      "type": ["number", "null"]
     },
     "availability": {
       "label": "Availability",
-      "type": "string"
+      "type": ["string", "null"]
     },
     "seller": {
       "label": "Seller",
-      "type": "string"
+      "type": ["string", "null"]
     },
     "features": {
       "label": "Features",
