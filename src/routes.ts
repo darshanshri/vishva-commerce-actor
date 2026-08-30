@@ -41,61 +41,118 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
             return Number.isFinite(number) ? number : null;
         };
 
+        // ----------------------------------------
+        // PRODUCT TITLE
+        // ----------------------------------------
+
         const title =
             text('#productTitle') ||
             text('h1');
+
+        // ----------------------------------------
+        // PRICE
+        // ----------------------------------------
 
         const priceText =
             text('.priceToPay .a-offscreen') ||
             text('.a-price .a-offscreen') ||
             text('#corePriceDisplay_desktop_feature_div .a-offscreen');
 
+        // ----------------------------------------
+        // MRP
+        // ----------------------------------------
+
         const mrpText =
             text('.basisPrice .a-offscreen') ||
             text('.a-price.a-text-price .a-offscreen') ||
             text('span.a-text-price .a-offscreen');
 
+        // ----------------------------------------
+        // RATING
+        // ----------------------------------------
+
         const ratingText =
             text('#acrPopover') ||
             text('[data-hook="average-star-rating"]');
+
+        // ----------------------------------------
+        // REVIEW COUNT
+        // ----------------------------------------
 
         const reviewText =
             text('#acrCustomerReviewText') ||
             text('[data-hook="total-review-count"]');
 
+        // ----------------------------------------
+        // AVAILABILITY
+        // ----------------------------------------
+
         const availability =
             text('#availability span') ||
             text('#outOfStock');
+
+        // ----------------------------------------
+        // SELLER
+        // ----------------------------------------
 
         const seller =
             text('#sellerProfileTriggerId') ||
             text('#sellerName');
 
+        // ----------------------------------------
+        // BRAND
+        // ----------------------------------------
+
         const brand =
             text('#bylineInfo') ||
-            text('#productOverview_feature_div .po-brand td.a-span9');
+            text(
+                '#productOverview_feature_div .po-brand td.a-span9',
+            );
+
+        // ----------------------------------------
+        // ASIN
+        // ----------------------------------------
 
         const asin =
             attr('#ASIN', 'value') ||
-            document.querySelector('input[name="ASIN"]')?.getAttribute('value') ||
+            document
+                .querySelector('input[name="ASIN"]')
+                ?.getAttribute('value') ||
             null;
+
+        // ----------------------------------------
+        // FEATURES
+        // ----------------------------------------
 
         const features = texts(
             '#feature-bullets ul li span.a-list-item',
         );
 
-        const images = Array.from(
-            document.querySelectorAll(
+        // ----------------------------------------
+        // IMAGES
+        // ----------------------------------------
+
+        const images: string[] = [];
+
+        document
+            .querySelectorAll(
                 '#altImages img, #imageBlock img',
-            ),
-        )
-            .map((img) => img.getAttribute('src'))
-            .filter(
-                (src): src is string =>
-                    Boolean(src) &&
+            )
+            .forEach((img) => {
+                const src = img.getAttribute('src');
+
+                if (
+                    src &&
                     !src.includes('sprite') &&
-                    !src.includes('transparent'),
-            );
+                    !src.includes('transparent')
+                ) {
+                    images.push(src);
+                }
+            });
+
+        // ----------------------------------------
+        // SPECIFICATIONS
+        // ----------------------------------------
 
         const specifications: Record<string, string> = {};
 
@@ -109,14 +166,21 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
                 const cells = row.querySelectorAll('th, td');
 
                 if (cells.length >= 2) {
-                    const key = cells[0].textContent?.trim();
-                    const value = cells[1].textContent?.trim();
+                    const key =
+                        cells[0].textContent?.trim();
+
+                    const value =
+                        cells[1].textContent?.trim();
 
                     if (key && value) {
                         specifications[key] = value;
                     }
                 }
             });
+
+        // ----------------------------------------
+        // VARIANTS
+        // ----------------------------------------
 
         const variantElements = document.querySelectorAll(
             '#twister_feature_div [data-csa-c-item-id], ' +
@@ -126,13 +190,21 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
 
         const variants = Array.from(variantElements)
             .map((element) => ({
-                text: element.textContent?.trim() || '',
+                text:
+                    element.textContent?.trim() || '',
+
                 value:
-                    element.getAttribute('data-csa-c-item-id') ||
+                    element.getAttribute(
+                        'data-csa-c-item-id',
+                    ) ||
                     element.getAttribute('title') ||
                     null,
             }))
             .filter((variant) => variant.text);
+
+        // ----------------------------------------
+        // OFFERS / PROMOTIONS
+        // ----------------------------------------
 
         const offerTexts = texts(
             '#offersDisplay_feature_div .a-list-item, ' +
@@ -140,6 +212,10 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
             '#couponText, ' +
             '#buybox .a-section',
         );
+
+        // ----------------------------------------
+        // FINAL PRODUCT OBJECT
+        // ----------------------------------------
 
         return {
             merchant: 'amazon',
@@ -162,6 +238,7 @@ router.addDefaultHandler(async ({ page, request, log, pushData }) => {
             seller,
 
             features,
+
             specifications,
 
             variants,
