@@ -401,6 +401,52 @@ export async function handleFliipkart(
         // original) so pid extraction never depends on the short input URL.
     }, page.url() || request.loadedUrl || request.url);
 
+    // ── TEMPORARY DIAGNOSTIC A (feature-time DOM state) ──────────────
+    // Read-only. Captures what the DOM looks like at the moment features
+    // are extracted, so we can see (in the real Actor) whether the showcase
+    // blocks exist, the feature funnel, whether a bot/reduced page was
+    // served, and whether the Specifications tab is present. Remove after RCA.
+    const diagA = await page.evaluate(() => {
+        const ownText = (el: Element): string =>
+            Array.from(el.childNodes)
+                .filter((n) => n.nodeType === 3)
+                .map((n) => n.textContent || '')
+                .join('')
+                .trim();
+        const twoChild = Array.from(document.querySelectorAll('div')).filter(
+            (d) => d.children.length === 2,
+        );
+        let leafTitle = 0;
+        let sentence = 0;
+        for (const d of twoChild) {
+            const kids = d.children;
+            if (kids[0].children.length !== 0) continue;
+            const t = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
+            if (t.length < 3 || t.length > 45 || /[:|₹]/.test(t) || /^\d/.test(t)) continue;
+            leafTitle++;
+            const desc = (kids[1].textContent || '').replace(/\s+/g, ' ').trim();
+            if (desc.length >= 45 && desc.split(' ').filter(Boolean).length >= 7) sentence++;
+        }
+        const bodyText = (document.body as HTMLElement).innerText || '';
+        return {
+            twoChildDivs: twoChild.length,
+            leafTitleDivs: leafTitle,
+            sentenceDivs: sentence,
+            showcaseWord: Array.from(document.querySelectorAll('div, span')).some(
+                (e) => ownText(e) === 'Showcase',
+            ),
+            specTabCount: Array.from(document.querySelectorAll('div, span, a, li')).filter((e) =>
+                /^Specifications$/i.test(ownText(e)),
+            ).length,
+            title: (document.title || '').slice(0, 90),
+            bodyLen: bodyText.length,
+            botSignal: /robot check|captcha|are you a human|access denied|something went wrong|please retry/i.test(
+                (document.title || '') + ' ' + bodyText.slice(0, 800),
+            ),
+        };
+    });
+    log.info(`[DIAG-flipkart A/feature-time] ${JSON.stringify(diagA)}`);
+
     // ── SPECIFICATIONS (second pass) ─────────────────────────────────
     // Flipkart lazy-renders the spec table only once the Specifications
     // tab is activated (its content is unmounted until then — which is why
@@ -504,6 +550,36 @@ export async function handleFliipkart(
         return out;
     });
     product.specifications = specifications;
+
+    // ── TEMPORARY DIAGNOSTIC B (post spec-tab-click DOM state) ───────
+    // Read-only. Captures whether, AFTER clicking the Specifications tab,
+    // the spec table actually hydrated in the real Actor (Model Number
+    // present? row candidates?). Distinguishes "tab not found/clicked" from
+    // "clicked but never hydrated". Remove after RCA.
+    const diagB = await page.evaluate(() => {
+        const ownText = (el: Element): string =>
+            Array.from(el.childNodes)
+                .filter((n) => n.nodeType === 3)
+                .map((n) => n.textContent || '')
+                .join('')
+                .trim();
+        return {
+            specTabCount: Array.from(document.querySelectorAll('div, span, a, li')).filter((e) =>
+                /^Specifications$/i.test(ownText(e)),
+            ).length,
+            modelNumberPresent: Array.from(document.querySelectorAll('div')).some(
+                (e) => ownText(e) === 'Model Number',
+            ),
+            specRowCandidates: Array.from(document.querySelectorAll('div')).filter((d) => {
+                const k = d.children;
+                return k.length >= 2 && k[0].children.length === 0 && !!(k[0].textContent || '').trim();
+            }).length,
+            twoChildDivs: Array.from(document.querySelectorAll('div')).filter(
+                (d) => d.children.length === 2,
+            ).length,
+        };
+    });
+    log.info(`[DIAG-flipkart B/specs-after-click] ${JSON.stringify(diagB)}`);
 
     log.info(
         `[flipkart] Done: title="${product.title ?? 'null'}" productId=${product.productId ?? 'null'} specs=${Object.keys(specifications).length} features=${product.features.length}`,
