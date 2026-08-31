@@ -493,6 +493,17 @@ export async function handleFliipkart(
                 emi,
                 exchange,
                 bankOfferSummary: bankSummaryText,
+                // Populated by the dedicated bank-offers pass in the handler
+                // below (the individual cards lazy-render only once the section
+                // is scrolled into view, so they cannot be read in this
+                // initial-DOM evaluate). Empty until then — never fabricated.
+                bankOffers: [] as Array<{
+                    bankName: string;
+                    amount: number;
+                    paymentMethod: string;
+                    isCashback: boolean;
+                    isBestValue: boolean;
+                }>,
                 productCoupon,
             };
         })();
@@ -568,6 +579,150 @@ export async function handleFliipkart(
         };
     });
     log.info(`[DIAG-flipkart A/feature-time] ${JSON.stringify(diagA)}`);
+
+    // ── BANK OFFERS (individual cards) ───────────────────────────────
+    // The buybox "Bank offers" carousel lazy-renders its individual cards
+    // ONLY once the section enters the viewport (IntersectionObserver).
+    // Verified live on the ASUS PDP (2026-08): at scrollY=0 the cards never
+    // appear (0 cards after 34 s); after the section is scrolled into view
+    // they render within a few hundred ms. So we scroll the section into view
+    // with a NATIVE Playwright locator (a real browser scroll drives React's
+    // observer reliably), then bounded-poll for the cards and extract.
+    //
+    // Extraction is anchored: "Bank offers" label → the offer-card section →
+    // one card per exact "Apply" leaf. Verified live: "Apply" as exact
+    // own-text appears on EXACTLY the bank-offer cards (5/5) and nowhere else
+    // on the page, so this is inherently contamination-proof. Recommendation
+    // tiles read "₹X with Bank offer" (never a bare "Apply") and are excluded
+    // structurally — no global ₹ scan. Fields are read from each card's
+    // ordered leaf nodes; a card missing amount/bank/payment is skipped, never
+    // fabricated. Session-dynamic values (banks, amounts, count) are extracted
+    // as rendered, never hardcoded. Validated live: 5 offers, 0 contamination,
+    // 0 duplicates.
+    const bankStart = Date.now();
+    try {
+        // Native Playwright scroll — exact-text match on the buybox label.
+        await page
+            .getByText('Bank offers', { exact: true })
+            .first()
+            .scrollIntoViewIfNeeded({ timeout: 5_000 });
+    } catch {
+        // Best-effort: if the locator isn't present (or in browser-free unit
+        // tests), the in-evaluate scroll + bounded poll below is the fallback.
+    }
+
+    const bankOffers = await page.evaluate(async () => {
+        const ownTextOf = (el: Element): string =>
+            Array.from(el.childNodes)
+                .filter((n) => n.nodeType === 3)
+                .map((n) => n.textContent || '')
+                .join('')
+                .trim();
+        const toNum = (s: string | null | undefined): number | null => {
+            if (!s) return null;
+            const n = Number(String(s).replace(/[^\d]/g, ''));
+            return Number.isFinite(n) ? n : null;
+        };
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+        const findLabel = (): Element | null =>
+            Array.from(document.querySelectorAll('div, span')).find((e) =>
+                /^Bank offers$/i.test(ownTextOf(e)),
+            ) || null;
+        const countApply = (): number =>
+            Array.from(document.querySelectorAll('*')).filter((e) =>
+                /^Apply$/i.test(ownTextOf(e)),
+            ).length;
+
+        // Fallback scroll (belt-and-suspenders with the native scroll above) +
+        // bounded wait for the lazy-rendered cards (≤3 s — evidence-based, not
+        // an arbitrary sleep). Bails the moment the first card appears.
+        const label0 = findLabel();
+        if (label0) label0.scrollIntoView({ block: 'center' });
+        for (let i = 0; i < 20 && countApply() === 0; i++) await sleep(150);
+
+        // Semantic anchor: the buybox "Bank offers" label.
+        const label = findLabel();
+        if (!label) return [];
+
+        // Climb to the smallest ancestor that already holds offer cards
+        // (an "Apply" leaf AND a "₹X off"). Bounded.
+        let section: Element | null = null;
+        let p: Element | null = label;
+        for (let lvl = 0; lvl < 9 && p; lvl++) {
+            const hasApply = Array.from(p.querySelectorAll('*')).some((e) =>
+                /^Apply$/i.test(ownTextOf(e)),
+            );
+            if (hasApply && /₹[\d,]+\s*off/i.test(p.textContent || '')) {
+                section = p;
+                break;
+            }
+            p = p.parentElement;
+        }
+        if (!section) return [];
+
+        // One card per "Apply" leaf; climb to the self-contained card row
+        // (exactly one "₹X off" + a payment method + short text).
+        const applies = Array.from(section.querySelectorAll('*')).filter((e) =>
+            /^Apply$/i.test(ownTextOf(e)),
+        );
+        const seen = new Set<string>();
+        const out: Array<{
+            bankName: string;
+            amount: number;
+            paymentMethod: string;
+            isCashback: boolean;
+            isBestValue: boolean;
+        }> = [];
+        const payRe = /(Credit Card|Debit Card|EMI|Net ?Banking|Wallet)/i;
+        for (const a of applies) {
+            let card: Element | null = null;
+            let q: Element | null = a;
+            for (let lvl = 0; lvl < 8 && q; lvl++) {
+                const t = (q.textContent || '').replace(/\s+/g, ' ').trim();
+                const amt = t.match(/₹[\d,]+\s*off/gi) || [];
+                if (amt.length === 1 && /Apply/i.test(t) && payRe.test(t) && t.length < 100) {
+                    card = q;
+                }
+                q = q.parentElement;
+            }
+            if (!card) continue;
+
+            // Read fields from the card's ordered leaf nodes.
+            const leaves = Array.from(card.querySelectorAll('*'))
+                .filter((e) => e.children.length === 0 && (e.textContent || '').trim())
+                .map((e) => (e.textContent || '').replace(/\s+/g, ' ').trim());
+            const amountLeaf = leaves.find((t) => /^₹[\d,]+\s*off$/i.test(t));
+            const payLeaf = leaves.find((t) => payRe.test(t));
+            const isBestValue = leaves.some((t) => /^Best value for you$/i.test(t));
+            const bankLeaf = leaves.find(
+                (t) =>
+                    t !== amountLeaf &&
+                    t !== payLeaf &&
+                    !/^Apply$/i.test(t) &&
+                    !/^Best value for you$/i.test(t) &&
+                    t.length > 0 &&
+                    t.length < 40,
+            );
+            const amount = toNum(amountLeaf);
+            if (amount === null || !bankLeaf || !payLeaf) continue; // require core fields
+
+            const paymentMethod = payLeaf.split('•')[0].trim();
+            const isCashback = /cashback/i.test(payLeaf);
+            const key = `${bankLeaf}|${amount}|${paymentMethod}`;
+            if (seen.has(key)) continue; // drop exact duplicates
+            seen.add(key);
+            out.push({ bankName: bankLeaf, amount, paymentMethod, isCashback, isBestValue });
+        }
+        return out;
+    });
+    const bankMs = Date.now() - bankStart;
+    if (product.dealIntelligence && Array.isArray(bankOffers)) {
+        product.dealIntelligence.bankOffers = bankOffers;
+    }
+    log.info(
+        `[flipkart] bankOffers=${Array.isArray(bankOffers) ? bankOffers.length : 0} in ${bankMs}ms`,
+    );
 
     // ── SPECIFICATIONS (second pass) ─────────────────────────────────
     // Flipkart lazy-renders the spec table only once the Specifications

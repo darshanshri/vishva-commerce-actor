@@ -1,4 +1,24 @@
 /**
+ * One individual bank offer card from the Flipkart buybox "Bank offers"
+ * carousel. Factual only, read from the rendered card's own leaf nodes.
+ * The set of banks, amounts and even the count are session/pincode dependent
+ * and are extracted exactly as rendered — never hardcoded. Shopigo AI decides
+ * the best card / effective price downstream; the Actor only reports.
+ */
+export interface BankOffer {
+    /** Bank / card program label, e.g. "Flipkart Axis", "IndusInd", "RBL". */
+    bankName: string;
+    /** Instant discount amount in ₹ (the "₹X off" on the card). */
+    amount: number;
+    /** Payment instrument, e.g. "Credit Card" (cashback stripped out). */
+    paymentMethod: string;
+    /** True when the card's payment line is flagged "• Cashback". */
+    isCashback: boolean;
+    /** True for the card Flipkart tags "Best value for you". */
+    isBestValue: boolean;
+}
+
+/**
  * Buybox deal intelligence (Flipkart).
  *
  * Factual, buybox-scoped values exactly as the merchant renders them for the
@@ -20,6 +40,12 @@ export interface DealIntelligence {
         bonusAmount: number | null;
     } | null;
     bankOfferSummary: string | null;
+    /**
+     * Individual bank offer cards. Additive to bankOfferSummary (which is
+     * unchanged). Empty array when the carousel renders no cards for this
+     * session — never null-vs-[] guessing, never fabricated.
+     */
+    bankOffers: BankOffer[];
     productCoupon: {
         text: string | null;
         amount: number | null;
