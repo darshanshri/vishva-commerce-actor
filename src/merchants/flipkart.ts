@@ -301,6 +301,10 @@ export async function handleFliipkart(
         // scope here (a later, separately-validated step). Validated live on
         // the ASUS PDP (2026-08): exactly the 4 product-specific summaries,
         // zero recommendation/cross-sell contamination.
+        // Captured here so dealIntelligence (below) reuses the SAME validated,
+        // buybox-scoped values — single source of truth, no re-scan.
+        let bankSummaryText: string | null = null;
+        let productCouponText: string | null = null;
         const offerTexts: string[] = [];
         {
             const seenOffer = new Set<string>();
@@ -326,6 +330,7 @@ export async function handleFliipkart(
                     .replace(/(offers)(₹)/i, '$1 $2')
                     .trim();
                 if (/^Bank offers ₹[\d,]+ off$/i.test(t)) {
+                    bankSummaryText = t;
                     pushOffer(t);
                     break;
                 }
@@ -370,11 +375,127 @@ export async function handleFliipkart(
                         t.length < 70 &&
                         t.toLowerCase().includes(brandLc)
                     ) {
+                        if (productCouponText === null) productCouponText = t;
                         pushOffer(t);
                     }
                 }
             }
         }
+
+        // ── DEAL INTELLIGENCE (buybox-scoped, factual only) ──────────
+        // Label-anchored to the product buybox (never a global scan, never
+        // "first/largest ₹"). Every value is exactly what THIS session
+        // renders — dynamic (pincode / session / default EMI tenure), so
+        // absent fields are null, never inferred or hardcoded. Downstream
+        // math (effective price, best offer, exchange-adjusted price) is
+        // Shopigo's job, not the Actor's. Validated live on the ASUS PDP.
+        const dealIntelligence = (() => {
+            const toNum = (s: string | null | undefined): number | null => {
+                if (!s) return null;
+                const n = Number(String(s).replace(/[^\d]/g, ''));
+                return Number.isFinite(n) ? n : null;
+            };
+            const ownTextOf = (el: Element): string =>
+                Array.from(el.childNodes)
+                    .filter((n) => n.nodeType === 3)
+                    .map((n) => n.textContent || '')
+                    .join('')
+                    .trim();
+            const findByOwn = (re: RegExp): Element | null =>
+                Array.from(document.querySelectorAll('div, span')).find((e) =>
+                    re.test(ownTextOf(e)),
+                ) || null;
+
+            // priceFee: "+₹306 Protect Promise Fee"
+            let priceFee: number | null = null;
+            {
+                const el = findByOwn(/Protect Promise Fee/i);
+                if (el) priceFee = toNum((ownTextOf(el).match(/₹[\d,]+/) || [])[0]);
+            }
+
+            // lowestPriceForYou: "₹61,740 Lowest price for you" (value precedes label)
+            let lowestPriceForYou: number | null = null;
+            {
+                const el = findByOwn(/^Lowest price for you$/i);
+                let p: Element | null = el;
+                for (let i = 0; i < 3 && p && lowestPriceForYou === null; i++) {
+                    const m = (p.textContent || '').match(/₹([\d,]+)\s*Lowest price for you/i);
+                    if (m) lowestPriceForYou = toNum(m[1]);
+                    p = p.parentElement;
+                }
+            }
+
+            // emi: "₹5,745 x 12m" + "Pay ₹68,940" (extract as rendered, no arithmetic)
+            let emi: {
+                monthly: number | null;
+                tenureMonths: number | null;
+                payAmount: number | null;
+            } | null = null;
+            {
+                const el = Array.from(document.querySelectorAll('div, span')).find((e) =>
+                    /^₹[\d,]+ x \d+m$/i.test(ownTextOf(e)),
+                );
+                if (el) {
+                    const mm = ownTextOf(el).match(/₹([\d,]+) x (\d+)m/i);
+                    let payAmount: number | null = null;
+                    let p: Element | null = el;
+                    for (let i = 0; i < 3 && p && payAmount === null; i++) {
+                        const pm = (p.textContent || '').match(/Pay ₹([\d,]+)/i);
+                        if (pm) payAmount = toNum(pm[1]);
+                        p = p.parentElement;
+                    }
+                    emi = {
+                        monthly: mm ? toNum(mm[1]) : null,
+                        tenureMonths: mm ? Number(mm[2]) : null,
+                        payAmount,
+                    };
+                }
+            }
+
+            // exchange: "Exchange offer" → "Up to ₹X" (≤6 ancestors, unique on
+            // page) + "extra ₹Y off" when present. Value is session/pincode
+            // dependent — extract what renders, never hardcode.
+            let exchange: { maxAmount: number | null; bonusAmount: number | null } | null = null;
+            {
+                const el = findByOwn(/^Exchange offer$/i);
+                if (el) {
+                    let maxAmount: number | null = null;
+                    let bonusAmount: number | null = null;
+                    let p: Element | null = el;
+                    for (let i = 0; i < 6 && p && (maxAmount === null || bonusAmount === null); i++) {
+                        const t = p.textContent || '';
+                        if (maxAmount === null) {
+                            const m = t.match(/Up to ₹([\d,]+)/i);
+                            if (m) maxAmount = toNum(m[1]);
+                        }
+                        if (bonusAmount === null) {
+                            const b = t.match(/extra ₹([\d,]+) off/i);
+                            if (b) bonusAmount = toNum(b[1]);
+                        }
+                        p = p.parentElement;
+                    }
+                    exchange = { maxAmount, bonusAmount };
+                }
+            }
+
+            // bankOfferSummary + productCoupon: reuse the already-validated,
+            // buybox-scoped values captured in the offers pass above.
+            const productCoupon = productCouponText
+                ? {
+                      text: productCouponText,
+                      amount: toNum((productCouponText.match(/₹([\d,]+)/) || [])[1]),
+                  }
+                : null;
+
+            return {
+                priceFee,
+                lowestPriceForYou,
+                emi,
+                exchange,
+                bankOfferSummary: bankSummaryText,
+                productCoupon,
+            };
+        })();
 
         return {
             merchant: 'flipkart' as const,
@@ -394,6 +515,7 @@ export async function handleFliipkart(
             variants: [],
             images,
             offers: offerTexts,
+            dealIntelligence,
             url: window.location.href,
             scrapedAt: new Date().toISOString(),
         };

@@ -73,6 +73,10 @@
         "label": "Offers",
         "type": "array"
       },
+      "dealIntelligence": {
+        "label": "Deal Intelligence",
+        "type": ["object", "null"]
+      },
       "url": {
         "label": "URL",
         "type": "string"

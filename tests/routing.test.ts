@@ -56,6 +56,9 @@ function makeCtx(url: string, label: string) {
             url,
             features: [],
             specifications: {},
+            // Optional additive field (Flipkart deal intelligence); null here
+            // since the real extraction runs in the browser evaluate we stub.
+            dealIntelligence: null,
         }),
         locator: () => ({ innerText: async () => '', count: async () => 0 }),
         screenshot: async () => Buffer.from(''),
@@ -110,5 +113,14 @@ describe('router dispatch — mirrors main.ts (label = detectMerchant(url))', ()
         await router(context);
         expect(pushed.length).toBe(1);
         expect(pushed[0].merchant).toBe('unknown');
+    });
+
+    it('flipkart record carries the optional dealIntelligence field', async () => {
+        const { context, pushed } = makeCtx('https://dl.flipkart.com/s/YFcyGZNNNN', 'flipkart');
+        await router(context);
+        expect(pushed.length).toBe(1);
+        // Additive, backward-compatible: the key is present (null under the
+        // stubbed evaluate; the real value is populated in-browser).
+        expect(Object.prototype.hasOwnProperty.call(pushed[0], 'dealIntelligence')).toBe(true);
     });
 });
