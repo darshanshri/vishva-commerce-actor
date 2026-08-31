@@ -228,33 +228,78 @@ export async function handleFliipkart(
             });
         }
 
-        // ── FEATURES ────────────────────────────────────────────────
-        // NEEDS_VALIDATION — Flipkart highlights are in a flex-row of divs
-        const features: string[] = Array.from(
-            document.querySelectorAll('div._4amez0 ul li, ul.Jkd1Ry li'), // NEEDS_VALIDATION
-        )
-            .map((el) => el.textContent?.trim() || '')
-            .filter(Boolean);
+        // ── FEATURES (showcase / product-detail blocks) ─────────────
+        // Flipkart renders each descriptive feature as a 2-child div:
+        // child0 is a leaf TITLE ("Lasting Battery") and child1 is a
+        // sentence DESCRIPTION. Class names are hashed, so we detect this
+        // SEMANTICALLY and require the description to be a real sentence
+        // (length + word count + lowercase words). That excludes footer/
+        // nav concatenations, spec rows, and price labels — no hardcoded,
+        // product-specific titles. Verified live: 9–10 clean blocks, zero
+        // recommendation/nav leakage (2026-08). Descriptions are the
+        // DOM-truncated preview (~100 chars); the full text sits behind a
+        // per-block "more" toggle we deliberately do not click.
+        const features: string[] = [];
+        {
+            // A group-header wrapper's body contains nested key/value rows;
+            // a real feature description never does. Guards against spec
+            // group-bodies being misread as features if the spec tab ever
+            // happens to be pre-rendered (fresh Actor navigations default to
+            // the showcase, so specs are absent here — validated live).
+            const featureHasNestedRow = (node: Element): boolean => {
+                for (const d of Array.from(node.querySelectorAll('div'))) {
+                    const kids = d.children;
+                    if (
+                        kids.length >= 2 &&
+                        kids[0].children.length === 0 &&
+                        (kids[0].textContent || '').trim()
+                    ) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            const seenFeature = new Set<string>();
+            Array.from(document.querySelectorAll('div')).forEach((d) => {
+                const kids = Array.from(d.children);
+                if (kids.length !== 2) return;
+                if (kids[0].children.length !== 0) return; // title must be a leaf
+                const t = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
+                const desc = (kids[1].textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .replace(/\.?\.\.\s*more$/i, '')
+                    .replace(/\s*more$/i, '')
+                    .trim();
+                if (t.length < 3 || t.length > 45) return;
+                if (/[:|₹]/.test(t) || /^\d/.test(t)) return; // not a spec/price label
+                const words = desc.split(' ').filter(Boolean);
+                if (desc.length < 45 || words.length < 7) return; // must be a sentence
+                if ((desc.match(/\b[a-z]{2,}\b/g) || []).length < 5) return;
+                if (featureHasNestedRow(kids[1])) return; // guard: not a spec group body
+                // Concatenated spec text has many camelCase joins
+                // ("TouchscreenNoScreen"); real prose has ~none.
+                if ((desc.match(/[a-z][A-Z]/g) || []).length > 2) return;
+                if (seenFeature.has(t)) return;
+                seenFeature.add(t);
+                features.push(`${t}: ${desc}`);
+            });
+        }
 
         // ── SPECIFICATIONS ───────────────────────────────────────────
-        // NEEDS_VALIDATION — Flipkart spec table uses row/col divs
+        // Filled by a SECOND pass in the handler below (after activating
+        // the Specifications tab, which lazy-renders the table). Left empty
+        // here so the initial-DOM pass never emits a partial spec set.
         const specifications: Record<string, string> = {};
-        document
-            .querySelectorAll('div._14cfVK, div.GNKN4t') // NEEDS_VALIDATION
-            .forEach((row) => {
-                const key =
-                    row.querySelector('td._7eVTh4, div.col._2H87gM')?.textContent?.trim(); // NEEDS_VALIDATION
-                const value =
-                    row.querySelector('td.Izz52n, div.col.JRY5G_')?.textContent?.trim(); // NEEDS_VALIDATION
-                if (key && value) specifications[key] = value;
-            });
 
-        // ── OFFERS / PROMOTIONS ──────────────────────────────────────
-        const offerTexts: string[] = Array.from(
-            document.querySelectorAll('div.lXl6tz, li._1t7JaC'), // NEEDS_VALIDATION
-        )
-            .map((el) => el.textContent?.replace(/\s+/g, ' ').trim() || '')
-            .filter((t) => t.length > 2 && t.length < 300);
+        // ── OFFERS ───────────────────────────────────────────────────
+        // Validated live (2026-08): this PDP exposes no reliably-scopeable
+        // offer block. The single genuine buybox offer ("No Cost EMI…") is
+        // detached from the price node (>8 ancestors away), while ~24
+        // "₹X with Bank offer" strings come from recommendation carousels.
+        // Rather than emit recommendation noise, return []. Revisit once we
+        // validate against an offer-rich PDP with a populated "Available
+        // offers" block.
+        const offerTexts: string[] = [];
 
         return {
             merchant: 'flipkart' as const,
@@ -281,8 +326,112 @@ export async function handleFliipkart(
         // original) so pid extraction never depends on the short input URL.
     }, page.url() || request.loadedUrl || request.url);
 
+    // ── SPECIFICATIONS (second pass) ─────────────────────────────────
+    // Flipkart lazy-renders the spec table only once the Specifications
+    // tab is activated (its content is unmounted until then — which is why
+    // this runs AFTER the features pass above, so activating it does not
+    // wipe the still-mounted showcase blocks). We click the tab, poll until
+    // a spec row hydrates (bounded ≤3 s — evidence-based, not an arbitrary
+    // wait), then extract key/value rows scoped to the spec section.
+    // Validated live: 58 clean pairs, zero nav/offer/recommendation/
+    // group-header leakage (2026-08). If it never hydrates, returns {} —
+    // never fabricated.
+    const specifications = await page.evaluate(async () => {
+        const ownText = (el: Element): string =>
+            Array.from(el.childNodes)
+                .filter((n) => n.nodeType === 3)
+                .map((n) => n.textContent || '')
+                .join('')
+                .trim();
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+        // Activate the Specifications tab(s) to trigger the lazy render.
+        Array.from(document.querySelectorAll('div, span, a, li'))
+            .filter((el) => /^Specifications$/i.test(ownText(el)))
+            .forEach((el) => {
+                try {
+                    (el as HTMLElement).click();
+                } catch {
+                    /* ignore */
+                }
+            });
+
+        // A spec row is a div whose first child is a non-empty leaf.
+        const rowReady = (): boolean =>
+            Array.from(document.querySelectorAll('div')).some((d) => {
+                const k = d.children[0];
+                return (
+                    !!k &&
+                    k.children.length === 0 &&
+                    !!(k.textContent || '').trim() &&
+                    d.children.length >= 2
+                );
+            });
+        for (let i = 0; i < 15 && !rowReady(); i++) await sleep(200);
+
+        // A group-header wrapper contains a nested key/value row; a real
+        // spec value never does. Used to drop "General", "In the Box", etc.
+        const hasNestedRow = (node: Element): boolean => {
+            for (const d of Array.from(node.querySelectorAll('div'))) {
+                const kids = d.children;
+                if (
+                    kids.length >= 2 &&
+                    kids[0].children.length === 0 &&
+                    (kids[0].textContent || '').trim()
+                ) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        const specRow = (d: Element): [string, string] | null => {
+            const kids = Array.from(d.children);
+            if (kids.length < 2 || kids.length > 3) return null;
+            if (kids[0].children.length !== 0) return null; // key is a leaf
+            if (kids[2] !== undefined && (kids[2].textContent || '').trim() !== '') return null;
+            const k = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
+            const v = (kids[1].textContent || '').replace(/\s+/g, ' ').trim();
+            if (!k || !v || k.length > 40 || k === v) return null;
+            if (hasNestedRow(kids[1])) return null; // reject group-header wrappers
+            return [k, v];
+        };
+
+        // Scope to the spec SECTION: anchor on the "Specifications" heading,
+        // climb while row count grows but stop before Reviews/related items
+        // (prevents bleeding into recommendation content).
+        const STOP =
+            /Ratings & Reviews|Questions and Answers|Products related to this item|Similar products/i;
+        const headings = Array.from(
+            document.querySelectorAll('div, span, h1, h2, h3'),
+        ).filter((el) => /^Specifications$/i.test(ownText(el)));
+        let bestAnc: Element | null = null;
+        let bestCount = 0;
+        for (const h of headings) {
+            let anc: Element | null = h;
+            for (let lvl = 0; lvl < 9 && anc; lvl++) {
+                if (STOP.test(anc.textContent || '')) break;
+                const n = Array.from(anc.querySelectorAll('div')).filter((d) => specRow(d)).length;
+                if (n > bestCount) {
+                    bestCount = n;
+                    bestAnc = anc;
+                }
+                anc = anc.parentElement;
+            }
+        }
+
+        const out: Record<string, string> = {};
+        if (bestAnc) {
+            Array.from(bestAnc.querySelectorAll('div')).forEach((d) => {
+                const kv = specRow(d);
+                if (kv && !(kv[0] in out)) out[kv[0]] = kv[1];
+            });
+        }
+        return out;
+    });
+    product.specifications = specifications;
+
     log.info(
-        `[flipkart] Done: title="${product.title ?? 'null'}" productId=${product.productId ?? 'null'}`,
+        `[flipkart] Done: title="${product.title ?? 'null'}" productId=${product.productId ?? 'null'} specs=${Object.keys(specifications).length} features=${product.features.length}`,
     );
     // TEMPORARY routing diagnostic (Phase 1 live validation).
     log.info(

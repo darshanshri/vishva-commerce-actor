@@ -45,9 +45,18 @@ function makeCtx(url: string, label: string) {
         waitForSelector: async () => ({}),
         title: async () => 'Mock Title',
         url: () => url,
-        // Handlers pass a browser function; we ignore it and return a stub.
-        // The merchant proof comes from the handler's own log tag, not this.
-        evaluate: async () => ({ merchant: '__stub__', productId: null, title: null, url }),
+        // Handlers pass a browser function; we ignore it and return a stub
+        // shaped like ProductData (some handlers read product.features etc.
+        // after evaluate). The merchant proof comes from the handler's own
+        // log tag, not from these values.
+        evaluate: async () => ({
+            merchant: '__stub__',
+            productId: null,
+            title: null,
+            url,
+            features: [],
+            specifications: {},
+        }),
         locator: () => ({ innerText: async () => '', count: async () => 0 }),
         screenshot: async () => Buffer.from(''),
     };
