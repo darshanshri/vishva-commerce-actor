@@ -65,8 +65,15 @@ export async function handleFliipkart(
         const ld = firstJsonLd('Product');
 
         // ── PRODUCT ID ───────────────────────────────────────────────
-        // Flipkart PDPs: …/p/itm{id}?pid=PID&…
-        const pidMatch = pageUrl.match(/[?&]pid=([A-Z0-9]+)/i);
+        // Flipkart PDPs carry pid in the query: …/p/itm{id}?pid=PID&…
+        // The Actor is fed a short URL (dl.flipkart.com/s/…) with NO pid,
+        // so we must read the FINAL redirected URL. window.location.href is
+        // the post-redirect URL inside the browser; pageUrl (page.url() /
+        // request.loadedUrl, passed in) is the reliable fallback. Verified
+        // on live PDP: pid=COMHDG7CFDWVKYMZ (2026-08).
+        const finalHref = window.location.href || pageUrl;
+        const pidMatch =
+            finalHref.match(/[?&]pid=([A-Z0-9]+)/i) || pageUrl.match(/[?&]pid=([A-Z0-9]+)/i);
         const productId = pidMatch ? pidMatch[1] : null;
 
         // ── TITLE ────────────────────────────────────────────────────
@@ -100,14 +107,83 @@ export async function handleFliipkart(
                 : document.querySelector('div.Nx9bqj')?.textContent?.trim() || // NEEDS_VALIDATION
                   null;
 
-        const mrpText =
-            document.querySelector('div.yRaY8j')?.textContent?.trim() || // NEEDS_VALIDATION
-            null;
+        // ── MRP ──────────────────────────────────────────────────────
+        // Flipkart JSON-LD does NOT expose MRP/list price (verified live:
+        // offers has price only — no highPrice/listPrice/priceSpecification).
+        // MRP appears solely as a strikethrough price in the DOM, and class
+        // names are hashed (rotate per build). A naive "first strikethrough
+        // price on the page" is WRONG: the PDP has ~30 strikethrough prices
+        // from recommendation carousels. So we ANCHOR to the buybox:
+        //   1. find the leaf node whose own text equals the selling price,
+        //   2. climb up to 5 ancestors and, within that subtree, take the
+        //      first strikethrough price-node whose value exceeds it.
+        // Verified live: anchors 64,990 → MRP 73,990 (2026-08). Requires a
+        // known selling price; if absent we return null rather than guess.
+        const priceShaped = /^(?:₹|Rs\.?)?\s*[\d,]{3,}$/;
+        const digitsOf = (s: string): number => Number(s.replace(/[^\d]/g, ''));
+        const ownPriceText = (el: Element): string | null => {
+            const own = Array.from(el.childNodes)
+                .filter((n) => n.nodeType === 3)
+                .map((n) => n.textContent || '')
+                .join('')
+                .trim();
+            return own && priceShaped.test(own) ? own : null;
+        };
+        const isLineThrough = (el: Element): boolean => {
+            const cs = window.getComputedStyle(el);
+            return /line-through/.test(cs.textDecorationLine || cs.textDecoration || '');
+        };
+
+        const sellNum = parseNumber(priceText);
+        let mrpText: string | null = null;
+        if (sellNum != null) {
+            let sellNode: Element | null = null;
+            for (const el of Array.from(document.querySelectorAll('div, span'))) {
+                const p = ownPriceText(el);
+                if (p && digitsOf(p) === sellNum) {
+                    sellNode = el;
+                    break;
+                }
+            }
+            let anc: Element | null = sellNode;
+            for (let lvl = 0; lvl < 5 && anc; lvl++) {
+                const struck = Array.from(anc.querySelectorAll('div, span')).find((el) => {
+                    const p = ownPriceText(el);
+                    return p != null && isLineThrough(el) && digitsOf(p) > sellNum;
+                });
+                if (struck) {
+                    mrpText = ownPriceText(struck);
+                    break;
+                }
+                anc = anc.parentElement;
+            }
+        }
+
+        // ── AVAILABILITY ─────────────────────────────────────────────
+        // JSON-LD gives a schema.org URL (e.g. "https://schema.org/InStock").
+        // Normalize to a human string. The last path segment is the enum.
+        const normalizeAvailability = (raw: string | null | undefined): string | null => {
+            if (!raw) return null;
+            const token = raw.split(/[/#]/).pop()?.toLowerCase() || '';
+            const map: Record<string, string> = {
+                instock: 'In stock',
+                outofstock: 'Out of stock',
+                soldout: 'Out of stock',
+                preorder: 'Pre-order',
+                presale: 'Pre-order',
+                backorder: 'Backorder',
+                limitedavailability: 'Limited availability',
+                discontinued: 'Discontinued',
+                onlineonly: 'In stock',
+                instoreonly: 'In store only',
+            };
+            return map[token] || raw;
+        };
 
         const ldAvailability = (offerObj as Record<string, unknown> | null)
             ?.['availability'] as string | undefined;
         const availability =
-            ldAvailability?.replace(/^.*#/, '') ||
+            normalizeAvailability(ldAvailability) ||
             document.querySelector('div._6R5TMN')?.textContent?.trim() || // NEEDS_VALIDATION
             null;
 
@@ -201,7 +277,9 @@ export async function handleFliipkart(
             url: window.location.href,
             scrapedAt: new Date().toISOString(),
         };
-    }, request.url);
+        // Pass the FINAL redirected URL (page.url() → request.loadedUrl →
+        // original) so pid extraction never depends on the short input URL.
+    }, page.url() || request.loadedUrl || request.url);
 
     log.info(
         `[flipkart] Done: title="${product.title ?? 'null'}" productId=${product.productId ?? 'null'}`,
