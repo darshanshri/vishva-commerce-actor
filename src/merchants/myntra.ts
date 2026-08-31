@@ -1,4 +1,6 @@
+import { Actor } from 'apify';
 import type { PlaywrightCrawlingContext } from '@crawlee/playwright';
+import { isDebugMode } from '../utils.js';
 
 /**
  * Myntra PDP handler.
@@ -27,6 +29,59 @@ export async function handleMyntra(
     await page
         .waitForSelector('h1.pdp-name, h1.pdp-title', { timeout: 15_000 })
         .catch(() => log.debug('[myntra] h1.pdp-name not found within 15 s — proceeding'));
+
+    // ── DIAGNOSTICS (dev only, SCRAPER_DEBUG=1) ─────────────────────────
+    // TEMPORARY: identifies exactly which page Myntra returns (real PDP,
+    // error boundary, or anti-bot interstitial) before extraction runs.
+    if (isDebugMode()) {
+        try {
+            log.info(`[DIAG] page.url(): ${page.url()}`);
+            log.info(`[DIAG] page.title(): ${await page.title()}`);
+            const bodyText = await page.locator('body').innerText().catch(() => '');
+            log.info(`[DIAG] body.innerText (first 2000 chars):\n${bodyText.slice(0, 2000)}`);
+            for (const sel of [
+                'script[type="application/ld+json"]',
+                'h1.pdp-name',
+                'h1.pdp-title',
+                '.pdp-price',
+                '.size-buttons-size-button',
+            ]) {
+                const count = await page.locator(sel).count().catch(() => -1);
+                log.info(`[DIAG] ${sel}: ${count > 0 ? 'FOUND' : 'missing'} (count=${count})`);
+            }
+            try {
+                const shot = await page.screenshot({ fullPage: true });
+                await Actor.setValue('DEBUG_SCREENSHOT_MYNTRA', shot, { contentType: 'image/png' });
+                log.info('[DIAG] Screenshot saved → DEBUG_SCREENSHOT_MYNTRA');
+            } catch (e) {
+                log.warning(`[DIAG] Screenshot failed: ${e}`);
+            }
+        } catch (e) {
+            log.warning(`[DIAG] Diagnostics block error: ${e}`);
+        }
+    }
+
+    // ── ERROR / BOT DETECTION (always, ~5 ms) ───────────────────────────
+    // Flags Myntra's error-boundary and known anti-bot interstitials in the
+    // page title so even non-debug runs surface a soft block.
+    const pageTitle = await page.title().catch(() => '');
+    const ERROR_SIGNALS = [
+        'oops',
+        'something went wrong',
+        'access denied',
+        'request unsuccessful',
+        'pardon our interruption',
+        'are you a human',
+        'captcha',
+        '403',
+        '503',
+    ];
+    const errMatches = ERROR_SIGNALS.filter((s) => pageTitle.toLowerCase().includes(s));
+    if (errMatches.length > 0) {
+        log.warning(
+            `[myntra] Non-PDP / error / bot page detected via title: "${pageTitle}" — ${errMatches.join(' | ')}`,
+        );
+    }
 
     const product = await page.evaluate((pageUrl) => {
         const parseNumber = (v: unknown): number | null => {
