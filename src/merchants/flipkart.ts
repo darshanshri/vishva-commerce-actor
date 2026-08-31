@@ -291,15 +291,90 @@ export async function handleFliipkart(
         // here so the initial-DOM pass never emits a partial spec set.
         const specifications: Record<string, string> = {};
 
-        // ── OFFERS ───────────────────────────────────────────────────
-        // Validated live (2026-08): this PDP exposes no reliably-scopeable
-        // offer block. The single genuine buybox offer ("No Cost EMI…") is
-        // detached from the price node (>8 ancestors away), while ~24
-        // "₹X with Bank offer" strings come from recommendation carousels.
-        // Rather than emit recommendation noise, return []. Revisit once we
-        // validate against an offer-rich PDP with a populated "Available
-        // offers" block.
+        // ── OFFERS (summary tier) ────────────────────────────────────
+        // Product-specific offer summaries that are already on the initial
+        // buybox — no modal, no click, ~0 latency. Each item is matched by
+        // a PRECISE, buybox-only text pattern (not a whole-page scan), so
+        // the recommendation carousel ("₹X with Bank offer") and cross-sell
+        // coupons (Mixer Grinders / Air fryer) never leak in. The detailed
+        // per-bank list lives behind a click + client API and is out of
+        // scope here (a later, separately-validated step). Validated live on
+        // the ASUS PDP (2026-08): exactly the 4 product-specific summaries,
+        // zero recommendation/cross-sell contamination.
         const offerTexts: string[] = [];
+        {
+            const seenOffer = new Set<string>();
+            const pushOffer = (s: string): void => {
+                const t = s.replace(/\s+/g, ' ').replace(/(offers)(₹)/i, '$1 $2').trim();
+                if (t && !seenOffer.has(t)) {
+                    seenOffer.add(t);
+                    offerTexts.push(t);
+                }
+            };
+            const ownTextOf = (el: Element): string =>
+                Array.from(el.childNodes)
+                    .filter((n) => n.nodeType === 3)
+                    .map((n) => n.textContent || '')
+                    .join('')
+                    .trim();
+
+            // 1) Bank offers summary: "Bank offers ₹3,250 off". Buybox only —
+            //    recommendation tiles read "₹X with Bank offer" and never match.
+            for (const el of Array.from(document.querySelectorAll('div, span'))) {
+                const t = (el.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .replace(/(offers)(₹)/i, '$1 $2')
+                    .trim();
+                if (/^Bank offers ₹[\d,]+ off$/i.test(t)) {
+                    pushOffer(t);
+                    break;
+                }
+            }
+
+            // 2) No Cost EMI teaser: "No Cost EMI* | Unlock ₹1 lakh".
+            for (const el of Array.from(document.querySelectorAll('div, span'))) {
+                const t = ownTextOf(el);
+                if (/^No Cost EMI.*Unlock/i.test(t) && t.length < 60) {
+                    pushOffer(t);
+                    break;
+                }
+            }
+
+            // 3) Exchange offer, with its cap when present. "Up to ₹X" is
+            //    unique to the exchange block on the PDP (validated), so
+            //    attaching it is unambiguous; omit it if absent (no guessing).
+            const exchangeEl = Array.from(document.querySelectorAll('div, span')).find(
+                (e) => /^Exchange offer$/i.test(ownTextOf(e)),
+            );
+            if (exchangeEl) {
+                let cap: string | null = null;
+                let p: Element | null = exchangeEl;
+                for (let i = 0; i < 6 && p && !cap; i++) {
+                    const m = (p.textContent || '').match(/Up to ₹[\d,]+/);
+                    if (m) cap = m[0];
+                    p = p.parentElement;
+                }
+                pushOffer(cap ? `Exchange offer (${cap})` : 'Exchange offer');
+            }
+
+            // 4) Product coupon, brand-filtered. Flipkart shows cross-sell
+            //    coupons alongside the product coupon; only a coupon naming
+            //    THIS product's brand is product-specific, so we keep just
+            //    those and drop the rest (precision over recall).
+            const brandLc = typeof brand === 'string' ? brand.toLowerCase() : '';
+            if (brandLc) {
+                for (const el of Array.from(document.querySelectorAll('div, span'))) {
+                    const t = ownTextOf(el);
+                    if (
+                        /Unlock .+ coupon.*(₹[\d,]+|\d+%) off/i.test(t) &&
+                        t.length < 70 &&
+                        t.toLowerCase().includes(brandLc)
+                    ) {
+                        pushOffer(t);
+                    }
+                }
+            }
+        }
 
         return {
             merchant: 'flipkart' as const,
