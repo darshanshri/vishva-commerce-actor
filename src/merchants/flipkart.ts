@@ -506,6 +506,89 @@ export async function handleFliipkart(
             };
         })();
 
+        // ── VARIANTS (attribute selector: Storage/RAM options) ───────
+        // Flipkart renders the variant picker as a LABELLED section
+        // ("Variant:"/"Storage"/"Size") holding one <a href=".../p/itm…?pid=…">
+        // per option. Each option link carries the config leaf (e.g.
+        // "128 GB + 8 GB"), the selling ₹price, and a strikethrough MRP; the
+        // link's pid is the variant's own product id. We anchor on the attribute
+        // label, climb to the smallest ancestor that holds ≥2 PDP option links,
+        // and read each option from its OWN link subtree — so recommendation
+        // carousels (also PDP links, but outside this section) never leak in.
+        // The selected option is the one whose pid === this page's pid. Every
+        // value is read as rendered; nothing is hardcoded. Verified live on the
+        // realme P4s PDP (2026-09): exactly the 3 storage/RAM options, correct
+        // prices/MRPs, selected = the on-page pid, zero carousel contamination.
+        const variants = (() => {
+            const ownTextOf = (el: Element): string =>
+                Array.from(el.childNodes)
+                    .filter((n) => n.nodeType === 3)
+                    .map((n) => n.textContent || '')
+                    .join('')
+                    .trim();
+            const isConfigLeaf = (t: string): boolean =>
+                /^\d{2,3}\s*GB(\s*\+\s*\d{1,2}\s*GB)?$/i.test(t);
+
+            const labelEl = Array.from(
+                document.querySelectorAll('div, span, td, th'),
+            ).find((e) => /^(Variant|Storage|Size)\s*:?$/i.test(ownTextOf(e)));
+            if (!labelEl) return [] as Array<Record<string, unknown>>;
+
+            // Climb to the smallest ancestor that holds the option links.
+            let section: Element | null = null;
+            let p: Element | null = labelEl;
+            for (let lvl = 0; lvl < 6 && p; lvl++) {
+                if (p.querySelectorAll('a[href*="/p/itm"]').length >= 2) {
+                    section = p;
+                    break;
+                }
+                p = p.parentElement;
+            }
+            if (!section) return [] as Array<Record<string, unknown>>;
+
+            const out: Array<Record<string, unknown>> = [];
+            const seen = new Set<string>();
+            for (const a of Array.from(section.querySelectorAll('a[href*="/p/itm"]'))) {
+                const href = a.getAttribute('href') || '';
+                const vpid = (href.match(/[?&]pid=([A-Z0-9]+)/i) || [])[1] || null;
+                // Option label = the config leaf inside THIS link. A link with no
+                // config leaf is not a real variant option → skip (never guess).
+                const label =
+                    Array.from(a.querySelectorAll('*'))
+                        .map((el) => ownTextOf(el))
+                        .find((t) => isConfigLeaf(t)) || null;
+                if (!label) continue;
+
+                const linkText = (a.textContent || '').replace(/\s+/g, ' ').trim();
+                const priceM = linkText.match(/₹\s*([\d,]+)/);
+                const vprice = priceM ? parseNumber(priceM[1]) : null;
+
+                // MRP = the strikethrough price descendant within this option.
+                let vmrp: number | null = null;
+                for (const el of Array.from(a.querySelectorAll('*'))) {
+                    const own = ownTextOf(el);
+                    if (own && /^[\d,]{3,}$/.test(own) && isLineThrough(el)) {
+                        vmrp = parseNumber(own);
+                        break;
+                    }
+                }
+
+                const key = vpid || label;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push({
+                    text: label,
+                    value: vpid,
+                    price: vprice,
+                    mrp: vmrp,
+                    selected: vpid != null && productId != null && vpid === productId,
+                    pid: vpid,
+                    url: href ? new URL(href, window.location.origin).href : null,
+                });
+            }
+            return out;
+        })();
+
         return {
             merchant: 'flipkart' as const,
             productId,
@@ -521,7 +604,7 @@ export async function handleFliipkart(
             seller: seller || null,
             features,
             specifications,
-            variants: [],
+            variants,
             images,
             offers: offerTexts,
             dealIntelligence,

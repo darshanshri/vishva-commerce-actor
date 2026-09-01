@@ -74,7 +74,20 @@ export interface ProductData {
     seller: string | null;
     features: string[];
     specifications: Record<string, string>;
-    variants: Array<{ text: string; value: string | null }>;
+    variants: Array<{
+        text: string;
+        value: string | null;
+        // Additive, optional, backward-compatible. Populated by the Flipkart
+        // handler for real product variants (e.g. Storage/RAM options): price,
+        // MRP, selected state, the variant's Flipkart pid and canonical URL.
+        // Other merchants keep emitting only { text, value } and omit these, so
+        // existing consumers and schemas are unaffected.
+        price?: number | null;
+        mrp?: number | null;
+        selected?: boolean;
+        pid?: string | null;
+        url?: string | null;
+    }>;
     images: string[];
     offers: string[];
     /**
