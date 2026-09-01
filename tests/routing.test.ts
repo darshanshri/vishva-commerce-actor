@@ -43,6 +43,7 @@ function makeCtx(url: string, label: string) {
     const page = {
         waitForLoadState: async () => {},
         waitForSelector: async () => ({}),
+        waitForFunction: async () => ({}),
         title: async () => 'Mock Title',
         url: () => url,
         // Handlers pass a browser function; we ignore it and return a stub

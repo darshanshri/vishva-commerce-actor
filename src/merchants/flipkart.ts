@@ -22,14 +22,55 @@ export async function handleFliipkart(
     const { page, request, log, pushData } = ctx;
     log.info(`[flipkart] Scraping: ${request.url}`);
 
-    // Navigation now resolves at 'commit' (see preNavigationHook), so wait
-    // explicitly for the primary extraction source — the server-rendered
-    // JSON-LD script — to be present before reading the DOM. Bounded: a PDP
-    // that never emits JSON-LD still proceeds to the h1 wait + CSS fallbacks
-    // rather than stalling.
+    // Navigation now resolves at 'commit' (see preNavigationHook). Wait for the
+    // ACTUAL primary extraction source: an application/ld+json script that parses
+    // to @type "Product" WITH a present offers.price — not merely "any ld+json".
+    // On the short-URL client-routed fallback the Product JSON-LD is injected
+    // late, so "any ld+json exists" resolved before price/brand/rating/
+    // availability/images were in the DOM and they came back null. This mirrors
+    // the exact firstJsonLd('Product') + offers-shape semantics the extraction
+    // below relies on. Bounded (15 s, unchanged); on miss we fall through to the
+    // h1 wait + CSS fallbacks rather than stalling.
     await page
-        .waitForSelector('script[type="application/ld+json"]', { timeout: 15_000 })
-        .catch(() => log.debug('[flipkart] JSON-LD script did not appear within 15 s — proceeding'));
+        .waitForFunction(
+            () => {
+                for (const el of Array.from(
+                    document.querySelectorAll('script[type="application/ld+json"]'),
+                )) {
+                    try {
+                        const data: unknown = JSON.parse(el.textContent || '');
+                        const items: unknown[] = Array.isArray(data) ? data : [data];
+                        for (const item of items) {
+                            if (
+                                !item ||
+                                typeof item !== 'object' ||
+                                (item as Record<string, unknown>)['@type'] !== 'Product'
+                            ) {
+                                continue;
+                            }
+                            const ldOffers = (item as Record<string, unknown>)['offers'];
+                            const offerObj =
+                                Array.isArray(ldOffers) && ldOffers.length > 0
+                                    ? (ldOffers[0] as Record<string, unknown>)
+                                    : typeof ldOffers === 'object' && ldOffers !== null
+                                      ? (ldOffers as Record<string, unknown>)
+                                      : null;
+                            if (offerObj && offerObj['price'] != null) return true;
+                        }
+                    } catch {
+                        // ignore malformed scripts
+                    }
+                }
+                return false;
+            },
+            undefined,
+            { timeout: 15_000 },
+        )
+        .catch(() =>
+            log.debug(
+                '[flipkart] Product JSON-LD (with offers.price) did not appear within 15 s — proceeding',
+            ),
+        );
 
     // Wait for a stable landmark that indicates the PDP has rendered.
     // Flipkart server-renders the product title in an <h1>; this is
