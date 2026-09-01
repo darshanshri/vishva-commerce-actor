@@ -228,62 +228,12 @@ export async function handleFliipkart(
             });
         }
 
-        // ── FEATURES (showcase / product-detail blocks) ─────────────
-        // Flipkart renders each descriptive feature as a 2-child div:
-        // child0 is a leaf TITLE ("Lasting Battery") and child1 is a
-        // sentence DESCRIPTION. Class names are hashed, so we detect this
-        // SEMANTICALLY and require the description to be a real sentence
-        // (length + word count + lowercase words). That excludes footer/
-        // nav concatenations, spec rows, and price labels — no hardcoded,
-        // product-specific titles. Verified live: 9–10 clean blocks, zero
-        // recommendation/nav leakage (2026-08). Descriptions are the
-        // DOM-truncated preview (~100 chars); the full text sits behind a
-        // per-block "more" toggle we deliberately do not click.
+        // Showcase blocks are lazy-rendered via IntersectionObserver and
+        // not present in the initial DOM in Apify headless. Extracted in a
+        // separate handler pass after the bank-offer scroll (which brings the
+        // showcase area into view). Placeholder keeps the returned shape
+        // schema-complete; overwritten by the handler after extraction.
         const features: string[] = [];
-        {
-            // A group-header wrapper's body contains nested key/value rows;
-            // a real feature description never does. Guards against spec
-            // group-bodies being misread as features if the spec tab ever
-            // happens to be pre-rendered (fresh Actor navigations default to
-            // the showcase, so specs are absent here — validated live).
-            const featureHasNestedRow = (node: Element): boolean => {
-                for (const d of Array.from(node.querySelectorAll('div'))) {
-                    const kids = d.children;
-                    if (
-                        kids.length >= 2 &&
-                        kids[0].children.length === 0 &&
-                        (kids[0].textContent || '').trim()
-                    ) {
-                        return true;
-                    }
-                }
-                return false;
-            };
-            const seenFeature = new Set<string>();
-            Array.from(document.querySelectorAll('div')).forEach((d) => {
-                const kids = Array.from(d.children);
-                if (kids.length !== 2) return;
-                if (kids[0].children.length !== 0) return; // title must be a leaf
-                const t = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
-                const desc = (kids[1].textContent || '')
-                    .replace(/\s+/g, ' ')
-                    .replace(/\.?\.\.\s*more$/i, '')
-                    .replace(/\s*more$/i, '')
-                    .trim();
-                if (t.length < 3 || t.length > 45) return;
-                if (/[:|₹]/.test(t) || /^\d/.test(t)) return; // not a spec/price label
-                const words = desc.split(' ').filter(Boolean);
-                if (desc.length < 45 || words.length < 7) return; // must be a sentence
-                if ((desc.match(/\b[a-z]{2,}\b/g) || []).length < 5) return;
-                if (featureHasNestedRow(kids[1])) return; // guard: not a spec group body
-                // Concatenated spec text has many camelCase joins
-                // ("TouchscreenNoScreen"); real prose has ~none.
-                if ((desc.match(/[a-z][A-Z]/g) || []).length > 2) return;
-                if (seenFeature.has(t)) return;
-                seenFeature.add(t);
-                features.push(`${t}: ${desc}`);
-            });
-        }
 
         // ── SPECIFICATIONS ───────────────────────────────────────────
         // Filled by a SECOND pass in the handler below (after activating
@@ -534,52 +484,6 @@ export async function handleFliipkart(
         // original) so pid extraction never depends on the short input URL.
     }, page.url() || request.loadedUrl || request.url);
 
-    // ── TEMPORARY DIAGNOSTIC A (feature-time DOM state) ──────────────
-    // Read-only. Captures what the DOM looks like at the moment features
-    // are extracted, so we can see (in the real Actor) whether the showcase
-    // blocks exist, the feature funnel, whether a bot/reduced page was
-    // served, and whether the Specifications tab is present. Remove after RCA.
-    const diagA = await page.evaluate(() => {
-        const ownText = (el: Element): string =>
-            Array.from(el.childNodes)
-                .filter((n) => n.nodeType === 3)
-                .map((n) => n.textContent || '')
-                .join('')
-                .trim();
-        const twoChild = Array.from(document.querySelectorAll('div')).filter(
-            (d) => d.children.length === 2,
-        );
-        let leafTitle = 0;
-        let sentence = 0;
-        for (const d of twoChild) {
-            const kids = d.children;
-            if (kids[0].children.length !== 0) continue;
-            const t = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
-            if (t.length < 3 || t.length > 45 || /[:|₹]/.test(t) || /^\d/.test(t)) continue;
-            leafTitle++;
-            const desc = (kids[1].textContent || '').replace(/\s+/g, ' ').trim();
-            if (desc.length >= 45 && desc.split(' ').filter(Boolean).length >= 7) sentence++;
-        }
-        const bodyText = (document.body as HTMLElement).innerText || '';
-        return {
-            twoChildDivs: twoChild.length,
-            leafTitleDivs: leafTitle,
-            sentenceDivs: sentence,
-            showcaseWord: Array.from(document.querySelectorAll('div, span')).some(
-                (e) => ownText(e) === 'Showcase',
-            ),
-            specTabCount: Array.from(document.querySelectorAll('div, span, a, li')).filter((e) =>
-                /^Specifications$/i.test(ownText(e)),
-            ).length,
-            title: (document.title || '').slice(0, 90),
-            bodyLen: bodyText.length,
-            botSignal: /robot check|captcha|are you a human|access denied|something went wrong|please retry/i.test(
-                (document.title || '') + ' ' + bodyText.slice(0, 800),
-            ),
-        };
-    });
-    log.info(`[DIAG-flipkart A/feature-time] ${JSON.stringify(diagA)}`);
-
     // ── BANK OFFERS (individual cards) ───────────────────────────────
     // The buybox "Bank offers" carousel lazy-renders its individual cards
     // ONLY once the section enters the viewport (IntersectionObserver).
@@ -724,16 +628,104 @@ export async function handleFliipkart(
         `[flipkart] bankOffers=${Array.isArray(bankOffers) ? bankOffers.length : 0} in ${bankMs}ms`,
     );
 
+    // ── FEATURES (showcase blocks, post bank-offer scroll) ────────────
+    // The bank-offer native scroll above brings the showcase area into
+    // view as a side-effect (showcase and bank-offers occupy similar
+    // document positions on the page). This separate evaluate therefore
+    // runs AFTER that scroll so the showcase IntersectionObserver has
+    // already fired, and BEFORE the Specifications tab is clicked —
+    // clicking the tab causes React to unmount the showcase and mount the
+    // spec table instead, making feature extraction impossible afterward.
+    // Extraction algorithm is unchanged from the validated browser result.
+    const featStart = Date.now();
+    const features = await page.evaluate(async () => {
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+        const featureHasNestedRow = (node: Element): boolean => {
+            for (const d of Array.from(node.querySelectorAll('div'))) {
+                const kids = d.children;
+                if (
+                    kids.length >= 2 &&
+                    kids[0].children.length === 0 &&
+                    (kids[0].textContent || '').trim()
+                ) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        // Count how many showcase-style 2-child divs exist right now.
+        const countShowcase = (): number =>
+            Array.from(document.querySelectorAll('div')).filter((d) => {
+                const kids = Array.from(d.children);
+                if (kids.length !== 2 || kids[0].children.length !== 0) return false;
+                const t = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
+                if (t.length < 3 || t.length > 45 || /[:|₹]/.test(t) || /^\d/.test(t)) return false;
+                const desc = (kids[1].textContent || '').replace(/\s+/g, ' ').trim();
+                return desc.length >= 45 && desc.split(' ').filter(Boolean).length >= 7;
+            }).length;
+
+        // If the bank-offer scroll didn't already render the showcase,
+        // try scrolling up toward it (≤3 s bounded poll).
+        if (countShowcase() === 0) {
+            window.scrollBy(0, -400);
+            for (let i = 0; i < 10 && countShowcase() === 0; i++) await sleep(150);
+        }
+        // Last resort: scroll to 30 % of page height and poll again.
+        if (countShowcase() === 0) {
+            window.scrollTo(0, document.body.scrollHeight * 0.3);
+            for (let i = 0; i < 10 && countShowcase() === 0; i++) await sleep(150);
+        }
+
+        const result: string[] = [];
+        const seenFeature = new Set<string>();
+        Array.from(document.querySelectorAll('div')).forEach((d) => {
+            const kids = Array.from(d.children);
+            if (kids.length !== 2) return;
+            if (kids[0].children.length !== 0) return;
+            const t = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
+            const desc = (kids[1].textContent || '')
+                .replace(/\s+/g, ' ')
+                .replace(/\.?\.\.\s*more$/i, '')
+                .replace(/\s*more$/i, '')
+                .trim();
+            if (t.length < 3 || t.length > 45) return;
+            if (/[:|₹]/.test(t) || /^\d/.test(t)) return;
+            const words = desc.split(' ').filter(Boolean);
+            if (desc.length < 45 || words.length < 7) return;
+            if ((desc.match(/\b[a-z]{2,}\b/g) || []).length < 5) return;
+            if (featureHasNestedRow(kids[1])) return;
+            if ((desc.match(/[a-z][A-Z]/g) || []).length > 2) return;
+            if (seenFeature.has(t)) return;
+            seenFeature.add(t);
+            result.push(`${t}: ${desc}`);
+        });
+        return result;
+    });
+    const featMs = Date.now() - featStart;
+    product.features = Array.isArray(features) ? features : product.features;
+    log.info(`[flipkart] features=${product.features.length} in ${featMs}ms`);
+
     // ── SPECIFICATIONS (second pass) ─────────────────────────────────
     // Flipkart lazy-renders the spec table only once the Specifications
-    // tab is activated (its content is unmounted until then — which is why
-    // this runs AFTER the features pass above, so activating it does not
-    // wipe the still-mounted showcase blocks). We click the tab, poll until
-    // a spec row hydrates (bounded ≤3 s — evidence-based, not an arbitrary
-    // wait), then extract key/value rows scoped to the spec section.
-    // Validated live: 58 clean pairs, zero nav/offer/recommendation/
-    // group-header leakage (2026-08). If it never hydrates, returns {} —
-    // never fabricated.
+    // tab is activated. The tab sits off-screen initially; a JS click on
+    // an off-screen element does not fire React's synthetic event handler.
+    // We scroll the tab into the viewport with a NATIVE Playwright locator
+    // first (same technique used for the bank-offer section above), then
+    // click via JS inside the evaluate — React fires, showcase unmounts,
+    // spec table mounts. Poll until the spec table has hydrated (bounded
+    // ≤3 s — evidence-based), then extract key/value rows scoped to the
+    // spec section. If it never hydrates, returns {} — never fabricated.
+    try {
+        await page
+            .getByText('Specifications', { exact: true })
+            .first()
+            .scrollIntoViewIfNeeded({ timeout: 5_000 });
+    } catch {
+        // In browser-free unit tests the locator is absent; the in-evaluate
+        // JS click below is the fallback.
+    }
+
     const specifications = await page.evaluate(async () => {
         const ownText = (el: Element): string =>
             Array.from(el.childNodes)
@@ -754,17 +746,31 @@ export async function handleFliipkart(
                 }
             });
 
-        // A spec row is a div whose first child is a non-empty leaf.
-        const rowReady = (): boolean =>
-            Array.from(document.querySelectorAll('div')).some((d) => {
+        // Scoped readiness check: real spec values are short technical terms
+        // (≤60 chars); showcase prose descriptions are long and excluded.
+        // Nav/buybox rows account for ~15 matches before the spec table
+        // renders; the threshold of 20 requires the spec table to be live
+        // (which adds ~49 rows). Prevents early exit on showcase/nav noise.
+        const rowReady = (): boolean => {
+            const shortValueRow = (d: Element): boolean => {
                 const k = d.children[0];
+                const v = d.children[1];
+                if (!k || !v || d.children.length > 3) return false;
+                if (k.children.length !== 0) return false;
+                const kText = (k.textContent || '').replace(/\s+/g, ' ').trim();
+                const vText = (v.textContent || '').replace(/\s+/g, ' ').trim();
                 return (
-                    !!k &&
-                    k.children.length === 0 &&
-                    !!(k.textContent || '').trim() &&
-                    d.children.length >= 2
+                    kText.length >= 2 &&
+                    kText.length <= 40 &&
+                    vText.length >= 1 &&
+                    vText.length <= 60 &&
+                    kText !== vText
                 );
-            });
+            };
+            return (
+                Array.from(document.querySelectorAll('div')).filter(shortValueRow).length >= 20
+            );
+        };
         for (let i = 0; i < 15 && !rowReady(); i++) await sleep(200);
 
         // A group-header wrapper contains a nested key/value row; a real
@@ -827,36 +833,6 @@ export async function handleFliipkart(
         return out;
     });
     product.specifications = specifications;
-
-    // ── TEMPORARY DIAGNOSTIC B (post spec-tab-click DOM state) ───────
-    // Read-only. Captures whether, AFTER clicking the Specifications tab,
-    // the spec table actually hydrated in the real Actor (Model Number
-    // present? row candidates?). Distinguishes "tab not found/clicked" from
-    // "clicked but never hydrated". Remove after RCA.
-    const diagB = await page.evaluate(() => {
-        const ownText = (el: Element): string =>
-            Array.from(el.childNodes)
-                .filter((n) => n.nodeType === 3)
-                .map((n) => n.textContent || '')
-                .join('')
-                .trim();
-        return {
-            specTabCount: Array.from(document.querySelectorAll('div, span, a, li')).filter((e) =>
-                /^Specifications$/i.test(ownText(e)),
-            ).length,
-            modelNumberPresent: Array.from(document.querySelectorAll('div')).some(
-                (e) => ownText(e) === 'Model Number',
-            ),
-            specRowCandidates: Array.from(document.querySelectorAll('div')).filter((d) => {
-                const k = d.children;
-                return k.length >= 2 && k[0].children.length === 0 && !!(k[0].textContent || '').trim();
-            }).length,
-            twoChildDivs: Array.from(document.querySelectorAll('div')).filter(
-                (d) => d.children.length === 2,
-            ).length,
-        };
-    });
-    log.info(`[DIAG-flipkart B/specs-after-click] ${JSON.stringify(diagB)}`);
 
     log.info(
         `[flipkart] Done: title="${product.title ?? 'null'}" productId=${product.productId ?? 'null'} specs=${Object.keys(specifications).length} features=${product.features.length}`,
