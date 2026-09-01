@@ -578,7 +578,12 @@ export async function handleFliipkart(
             isCashback: boolean;
             isBestValue: boolean;
         }> = [];
-        const payRe = /(Credit Card|Debit Card|EMI|Net ?Banking|Wallet)/i;
+        // Payment instruments Flipkart tags on buybox offer cards. UPI is a
+        // first-class method (e.g. the "CRED ₹100 off • UPI" card), not a bank
+        // card — so the abstraction is payment offers, not only bank offers.
+        // Kept as an open alternation (not a closed enum) so a new Flipkart
+        // method is a one-token addition, never a schema change.
+        const payRe = /(Credit Card|Debit Card|UPI|EMI|Net ?Banking|Wallet)/i;
         for (const a of applies) {
             let card: Element | null = null;
             let q: Element | null = a;
