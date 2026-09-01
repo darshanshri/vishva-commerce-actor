@@ -22,7 +22,14 @@ export async function handleFliipkart(
     const { page, request, log, pushData } = ctx;
     log.info(`[flipkart] Scraping: ${request.url}`);
 
-    await page.waitForLoadState('domcontentloaded');
+    // Navigation now resolves at 'commit' (see preNavigationHook), so wait
+    // explicitly for the primary extraction source — the server-rendered
+    // JSON-LD script — to be present before reading the DOM. Bounded: a PDP
+    // that never emits JSON-LD still proceeds to the h1 wait + CSS fallbacks
+    // rather than stalling.
+    await page
+        .waitForSelector('script[type="application/ld+json"]', { timeout: 15_000 })
+        .catch(() => log.debug('[flipkart] JSON-LD script did not appear within 15 s — proceeding'));
 
     // Wait for a stable landmark that indicates the PDP has rendered.
     // Flipkart server-renders the product title in an <h1>; this is

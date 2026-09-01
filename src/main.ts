@@ -94,15 +94,16 @@ const crawler = new PlaywrightCrawler({
     requestHandler: router,
     // Flipkart PDPs (reached via the dl.flipkart.com short-URL redirect) keep
     // trackers/ads/long-poll connections open and never fire the `load` event
-    // inside the 60 s navigation timeout, so the default waitUntil:'load' wastes
-    // a full attempt. Switch ONLY Flipkart to 'domcontentloaded'; the handler
-    // already re-waits domcontentloaded + waitForSelector('h1'), so readiness is
-    // preserved. Amazon/Myntra/Nykaa keep their existing 'load' navigation.
+    // inside the navigation timeout, and even `domcontentloaded` can be delayed
+    // by blocking sub-resources, so the goto wastes a full attempt. Switch ONLY
+    // Flipkart to 'commit' — resolve navigation as soon as the response commits;
+    // the handler then waits explicitly for the JSON-LD script + h1 landmark, so
+    // readiness is preserved. Amazon/Myntra/Nykaa keep their 'load' navigation.
     preNavigationHooks: [
         async ({ request, page }, gotoOptions) => {
             if (request.label !== 'flipkart') return;
             if (gotoOptions) {
-                gotoOptions.waitUntil = 'domcontentloaded';
+                gotoOptions.waitUntil = 'commit';
             }
 
             // Pre-resolve dl.flipkart.com short/deep links to the canonical PDP
