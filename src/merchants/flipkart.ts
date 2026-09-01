@@ -628,19 +628,26 @@ export async function handleFliipkart(
         `[flipkart] bankOffers=${Array.isArray(bankOffers) ? bankOffers.length : 0} in ${bankMs}ms`,
     );
 
-    // ── FEATURES (showcase blocks, post bank-offer scroll) ────────────
-    // The bank-offer native scroll above brings the showcase area into
-    // view as a side-effect (showcase and bank-offers occupy similar
-    // document positions on the page). This separate evaluate therefore
-    // runs AFTER that scroll so the showcase IntersectionObserver has
-    // already fired, and BEFORE the Specifications tab is clicked —
-    // clicking the tab causes React to unmount the showcase and mount the
-    // spec table instead, making feature extraction impossible afterward.
-    // Extraction algorithm is unchanged from the validated browser result.
+    // ── FEATURES (showcase blocks) ──────────────────────────────────────
+    // Must run BEFORE the Specifications tab is clicked — clicking the tab
+    // causes React to unmount Showcase and mount the spec table, making
+    // feature extraction impossible afterward.
+    // Flipkart's scroll container is div.lQLKCP (not the window).
+    // scrollIntoView({block:'center'}) on the Specifications heading sets
+    // lQLKCP.scrollTop ≈ 1572, making the visible range 1572–2227 which
+    // covers the Showcase content area at containerRelativeY ≈ 1934 and
+    // fires the IntersectionObserver that renders the Showcase blocks.
+    try {
+        await page
+            .getByText('Specifications', { exact: true })
+            .first()
+            .evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+        await page.waitForTimeout(250);
+    } catch {
+        // absent in unit-test stubs; extraction falls back to whatever is in DOM
+    }
     const featStart = Date.now();
     const features = await page.evaluate(async () => {
-        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
         const featureHasNestedRow = (node: Element): boolean => {
             for (const d of Array.from(node.querySelectorAll('div'))) {
                 const kids = d.children;
@@ -654,29 +661,6 @@ export async function handleFliipkart(
             }
             return false;
         };
-        // Count how many showcase-style 2-child divs exist right now.
-        const countShowcase = (): number =>
-            Array.from(document.querySelectorAll('div')).filter((d) => {
-                const kids = Array.from(d.children);
-                if (kids.length !== 2 || kids[0].children.length !== 0) return false;
-                const t = (kids[0].textContent || '').replace(/\s+/g, ' ').trim();
-                if (t.length < 3 || t.length > 45 || /[:|₹]/.test(t) || /^\d/.test(t)) return false;
-                const desc = (kids[1].textContent || '').replace(/\s+/g, ' ').trim();
-                return desc.length >= 45 && desc.split(' ').filter(Boolean).length >= 7;
-            }).length;
-
-        // If the bank-offer scroll didn't already render the showcase,
-        // try scrolling up toward it (≤3 s bounded poll).
-        if (countShowcase() === 0) {
-            window.scrollBy(0, -400);
-            for (let i = 0; i < 10 && countShowcase() === 0; i++) await sleep(150);
-        }
-        // Last resort: scroll to 30 % of page height and poll again.
-        if (countShowcase() === 0) {
-            window.scrollTo(0, document.body.scrollHeight * 0.3);
-            for (let i = 0; i < 10 && countShowcase() === 0; i++) await sleep(150);
-        }
-
         const result: string[] = [];
         const seenFeature = new Set<string>();
         Array.from(document.querySelectorAll('div')).forEach((d) => {
@@ -708,22 +692,18 @@ export async function handleFliipkart(
 
     // ── SPECIFICATIONS (second pass) ─────────────────────────────────
     // Flipkart lazy-renders the spec table only once the Specifications
-    // tab is activated. The tab sits off-screen initially; a JS click on
-    // an off-screen element does not fire React's synthetic event handler.
-    // We scroll the tab into the viewport with a NATIVE Playwright locator
-    // first (same technique used for the bank-offer section above), then
-    // click via JS inside the evaluate — React fires, showcase unmounts,
-    // spec table mounts. Poll until the spec table has hydrated (bounded
-    // ≤3 s — evidence-based), then extract key/value rows scoped to the
-    // spec section. If it never hydrates, returns {} — never fabricated.
+    // tab is activated. A native Playwright click centers the tab in the
+    // lQLKCP scroll container (scrollTop ≈ 1572, visible range 1572–2227)
+    // AND dispatches a trusted pointer event that fires React's synthetic
+    // onClick. scrollIntoViewIfNeeded (prior approach) did minimum scroll
+    // only — the content area landed 35 px outside lQLKCP's viewport so
+    // the spec table never entered view and JS-level click() was ignored.
+    // If the tab never renders (unit-test stubs), the poll times out and
+    // the guard below returns {} — showcase data never contaminates specs.
     try {
-        await page
-            .getByText('Specifications', { exact: true })
-            .first()
-            .scrollIntoViewIfNeeded({ timeout: 5_000 });
+        await page.getByText('Specifications', { exact: true }).first().click();
     } catch {
-        // In browser-free unit tests the locator is absent; the in-evaluate
-        // JS click below is the fallback.
+        // absent in unit-test stubs
     }
 
     const specifications = await page.evaluate(async () => {
@@ -734,17 +714,6 @@ export async function handleFliipkart(
                 .join('')
                 .trim();
         const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-        // Activate the Specifications tab(s) to trigger the lazy render.
-        Array.from(document.querySelectorAll('div, span, a, li'))
-            .filter((el) => /^Specifications$/i.test(ownText(el)))
-            .forEach((el) => {
-                try {
-                    (el as HTMLElement).click();
-                } catch {
-                    /* ignore */
-                }
-            });
 
         // Scoped readiness check: real spec values are short technical terms
         // (≤60 chars); showcase prose descriptions are long and excluded.
@@ -772,6 +741,9 @@ export async function handleFliipkart(
             );
         };
         for (let i = 0; i < 15 && !rowReady(); i++) await sleep(200);
+        // Guard: if the spec table still hasn't rendered, return empty rather
+        // than letting bestAnc pick up the Showcase blocks as "best" ancestor.
+        if (!rowReady()) return {};
 
         // A group-header wrapper contains a nested key/value row; a real
         // spec value never does. Used to drop "General", "In the Box", etc.
