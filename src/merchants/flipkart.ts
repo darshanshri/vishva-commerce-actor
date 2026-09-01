@@ -646,7 +646,11 @@ export async function handleFliipkart(
         await page
             .getByText('Specifications', { exact: true })
             .first()
-            .evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+            .evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }), undefined, {
+                // Bounded: if the tab text is absent/slow in headless, fail fast
+                // instead of blocking on the 30 s default locator timeout.
+                timeout: 5_000,
+            });
         await page.waitForTimeout(250);
     } catch {
         // absent in unit-test stubs; extraction falls back to whatever is in DOM
@@ -706,9 +710,13 @@ export async function handleFliipkart(
     // If the tab never renders (unit-test stubs), the poll times out and
     // the guard below returns {} — showcase data never contaminates specs.
     try {
-        await page.getByText('Specifications', { exact: true }).first().click();
+        // Bounded: a native click retries actionability checks up to Playwright's
+        // 30 s default; in headless the tab can be unactionable and hang the whole
+        // requestHandler. Cap at 5 s — a healthy click resolves in <1 s. On miss it
+        // throws → caught here → the rowReady() guard below returns {} gracefully.
+        await page.getByText('Specifications', { exact: true }).first().click({ timeout: 5_000 });
     } catch {
-        // absent in unit-test stubs
+        // absent in unit-test stubs, or the tab was not clickable in time
     }
 
     const specifications = await page.evaluate(async () => {

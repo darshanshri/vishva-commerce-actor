@@ -53,6 +53,26 @@ const crawler = new PlaywrightCrawler({
     proxyConfiguration,
     maxRequestsPerCrawl,
     requestHandler: router,
+    // Flipkart PDPs (reached via the dl.flipkart.com short-URL redirect) keep
+    // trackers/ads/long-poll connections open and never fire the `load` event
+    // inside the 60 s navigation timeout, so the default waitUntil:'load' wastes
+    // a full attempt. Switch ONLY Flipkart to 'domcontentloaded'; the handler
+    // already re-waits domcontentloaded + waitForSelector('h1'), so readiness is
+    // preserved. Amazon/Myntra/Nykaa keep their existing 'load' navigation.
+    preNavigationHooks: [
+        async ({ request }, gotoOptions) => {
+            if (request.label === 'flipkart' && gotoOptions) {
+                gotoOptions.waitUntil = 'domcontentloaded';
+            }
+        },
+    ],
+    // Explicit safety bounds so one pathological request can never consume the
+    // whole 300 s Actor run: 3 attempts × (45 s nav + 45 s handler) = 270 s hard
+    // ceiling < 300 s. Normal Flipkart extraction finishes in ~10–20 s, so these
+    // leave ample room for the dynamic bank-offer/feature/spec passes.
+    navigationTimeoutSecs: 45,
+    requestHandlerTimeoutSecs: 45,
+    maxRequestRetries: 2,
     launchContext: {
         launchOptions: {
             headless: true,
